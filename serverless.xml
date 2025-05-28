@@ -1,0 +1,58 @@
+// heartsongs-bot-service/serverless.yml
+service: heartsongs-bot-service
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  
+  environment:
+    HEARTSONGS_API_URL: ${env:HEARTSONGS_API_URL}
+    OPENAI_API_KEY: ${env:OPENAI_API_KEY}
+    SERVICE_NAME: ${self:service}
+    STAGE: ${self:provider.stage}
+  
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - lambda:InvokeFunction
+          Resource:
+            - arn:aws:lambda:${self:provider.region}:*:function:${self:service}-${self:provider.stage}-*
+
+functions:
+  spawn-bot:
+    handler: lambda/spawn-bot/handler.handler
+    timeout: 30
+    events:
+      - http:
+          path: /spawn-bot
+          method: post
+          cors: true
+    environment:
+      HEARTSONGS_API_URL: ${env:HEARTSONGS_API_URL}
+
+  bot-worker:
+    handler: lambda/bot-worker/handler.handler
+    timeout: 900 # 15 minutes
+    environment:
+      HEARTSONGS_API_URL: ${env:HEARTSONGS_API_URL}
+
+  cleanup-bot:
+    handler: lambda/cleanup/handler.handler
+    timeout: 30
+    events:
+      - schedule: rate(1 hour) # Clean up orphaned bots
+
+plugins:
+  - serverless-offline
+
+package:
+  exclude:
+    - .git/**
+    - README.md
+    - .env*
