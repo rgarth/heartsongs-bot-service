@@ -10,31 +10,36 @@ const PERSONALITIES = {
     name: 'Eclectic Explorer',
     description: 'Loves discovering hidden gems across all genres',
     votingStyle: 'creative',
-    temperature: 0.8
+    temperature: 0.8,
+    namePrefix: 'eclectic'
   },
   mainstream: {
     name: 'Chart Topper',
     description: 'Knows all the hits and crowd favorites',
     votingStyle: 'popular',
-    temperature: 0.4
+    temperature: 0.4,
+    namePrefix: 'pop'
   },
   indie: {
     name: 'Indie Insider',
     description: 'Champions underground and alternative artists',
     votingStyle: 'authentic',
-    temperature: 0.9
+    temperature: 0.9,
+    namePrefix: 'indie'
   },
   vintage: {
     name: 'Time Traveler',
     description: 'Expert in classic tracks from decades past',
     votingStyle: 'nostalgic',
-    temperature: 0.6
+    temperature: 0.6,
+    namePrefix: 'classic'
   },
   analytical: {
     name: 'Music Scholar',
     description: 'Makes decisions based on musical theory and lyrics',
     votingStyle: 'intellectual',
-    temperature: 0.3
+    temperature: 0.3,
+    namePrefix: 'maestro'
   }
 };
 
@@ -82,14 +87,11 @@ exports.handler = async (event, context) => {
     const botConfig = PERSONALITIES[personality] || PERSONALITIES.eclectic;
     console.log(`Using bot personality: ${botConfig.name}`);
     
-    // Generate bot username
-    const musicWords = [
-      'vinyl', 'beat', 'rhythm', 'melody', 'harmony', 'bass', 'treble',
-      'tempo', 'chord', 'riff', 'groove', 'sync', 'echo', 'reverb',
-      'pitch', 'tone', 'vibe', 'flow', 'pulse', 'wave'
-    ];
+    // Generate unique 4-digit number
+    const uniqueNumber = Math.floor(1000 + Math.random() * 9000);
     
-    const botName = `${musicWords[Math.floor(Math.random() * musicWords.length)]}_bot_${Math.floor(1000 + Math.random() * 9000)}`;
+    // Create bot name using the new format
+    const botName = `${botConfig.namePrefix}_bot_${uniqueNumber}`;
     
     // Register bot with Heart Songs API
     console.log(`Registering bot: ${botName}`);
