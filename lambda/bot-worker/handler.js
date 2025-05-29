@@ -14,6 +14,7 @@ class BotWorker {
     this.personality = config.personality;
     this.personalityConfig = config.personalityConfig;
     this.apiUrl = process.env.HEARTSONGS_API_URL;
+    this.openaiApiKey = process.env.OPENAI_API_KEY;
     this.gameState = null;
     this.hasSubmitted = false;
     this.hasVoted = false;
@@ -110,40 +111,276 @@ class BotWorker {
     }
   }
 
+  /**
+   * AI-powered song selection using OpenAI
+   */
   async chooseSongForQuestion(question) {
     try {
-      // Simple AI simulation for now - in production, use OpenAI API
-      const mockChoices = [
-        { artist: 'The Beatles', song: 'Here Comes The Sun', reason: 'Classic feel-good track' },
-        { artist: 'Queen', song: 'Bohemian Rhapsody', reason: 'Epic and dramatic' },
-        { artist: 'Fleetwood Mac', song: 'Dreams', reason: 'Timeless and emotional' },
-        { artist: 'Daft Punk', song: 'Get Lucky', reason: 'Modern classic' },
-        { artist: 'Johnny Cash', song: 'Hurt', reason: 'Powerful and haunting' }
-      ];
+      console.log(`Bot ${this.botName} thinking about: "${question.text}"`);
       
-      const choice = mockChoices[Math.floor(Math.random() * mockChoices.length)];
-      console.log(`Bot ${this.botName} AI reasoning: ${choice.reason}`);
+      // Step 1: Use AI to analyze the question and suggest songs
+      const aiSuggestions = await this.getAISongSuggestions(question.text);
+      console.log(`Bot ${this.botName} AI suggestions:`, aiSuggestions);
       
-      // Search for the song
-      const searchResults = await this.searchSongs(`${choice.artist} ${choice.song}`);
-      
-      if (searchResults.length > 0) {
-        const bestMatch = this.findBestMatch(searchResults, choice);
-        console.log(`Bot ${this.botName} selected: "${bestMatch.name}" by ${bestMatch.artist}`);
-        return bestMatch;
+      if (!aiSuggestions || aiSuggestions.length === 0) {
+        console.log(`Bot ${this.botName} got no AI suggestions, will pass`);
+        return null;
       }
       
+      // Step 2: Try to find each suggested song in the music database
+      for (const suggestion of aiSuggestions) {
+        console.log(`Bot ${this.botName} searching for: "${suggestion.artist} - ${suggestion.song}"`);
+        
+        // Search for the specific song
+        const searchQuery = `${suggestion.artist} ${suggestion.song}`;
+        const searchResults = await this.searchSongs(searchQuery);
+        
+        if (searchResults.length > 0) {
+          // Find the best match for this specific suggestion
+          const bestMatch = this.findBestMatch(searchResults, suggestion);
+          
+          if (this.isGoodMatch(bestMatch, suggestion)) {
+            console.log(`Bot ${this.botName} selected: "${bestMatch.name}" by ${bestMatch.artist}`);
+            console.log(`Bot ${this.botName} AI reasoning: ${suggestion.reasoning}`);
+            return bestMatch;
+          }
+        }
+        
+        // Small delay between searches
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      console.log(`Bot ${this.botName} couldn't find any of the AI suggestions, will pass`);
       return null;
+      
     } catch (error) {
       console.error('AI song selection failed:', error.message);
       return null;
     }
   }
 
+  /**
+   * Get song suggestions from OpenAI based on the question
+   */
+  async getAISongSuggestions(questionText) {
+    if (!this.openaiApiKey) {
+      console.warn('OpenAI API key not available, using fallback logic');
+      return this.getFallbackSuggestions(questionText);
+    }
+
+    try {
+      const personalityPrompt = this.getPersonalityPrompt();
+      
+      const prompt = `${personalityPrompt}
+
+Question: "${questionText}"
+
+Please suggest 3 songs that would be good answers to this question. Consider:
+- The literal meaning of the question
+- Popular and well-known songs that people would recognize
+- Songs that fit the mood, era, or genre mentioned in the question
+- Your personality as described above
+
+For each song, provide:
+- Artist name (exact spelling)
+- Song title (exact spelling)  
+- Brief reasoning (1-2 sentences)
+
+Format your response as JSON:
+{
+  "suggestions": [
+    {
+      "artist": "Artist Name",
+      "song": "Song Title",
+      "reasoning": "Why this song fits the question"
+    }
+  ]
+}`;
+
+      const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a music expert helping to answer music-related questions. Always respond with valid JSON in the exact format requested.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 500,
+        temperature: this.personalityConfig.temperature || 0.7
+      }, {
+        headers: {
+          'Authorization': `Bearer ${this.openaiApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      });
+
+      const aiResponse = response.data.choices[0].message.content;
+      console.log(`Bot ${this.botName} raw AI response:`, aiResponse);
+      
+      // Parse the JSON response
+      try {
+        const parsed = JSON.parse(aiResponse);
+        return parsed.suggestions || [];
+      } catch (parseError) {
+        console.error('Failed to parse AI response as JSON:', parseError);
+        // Try to extract suggestions from malformed response
+        return this.extractSuggestionsFromText(aiResponse);
+      }
+      
+    } catch (error) {
+      console.error('OpenAI API error:', error.message);
+      if (error.response) {
+        console.error('OpenAI API response:', error.response.data);
+      }
+      // Fallback to basic logic
+      return this.getFallbackSuggestions(questionText);
+    }
+  }
+
+  /**
+   * Get personality-specific prompt for the AI
+   */
+  getPersonalityPrompt() {
+    const prompts = {
+      eclectic: "You are an eclectic music lover who enjoys discovering hidden gems and lesser-known tracks across all genres. You prefer unique, creative, and sometimes obscure songs that others might not think of.",
+      
+      mainstream: "You are a mainstream music fan who knows all the biggest hits and crowd favorites. You prefer popular, chart-topping songs that everyone knows and loves.",
+      
+      indie: "You are an indie music enthusiast who champions underground and alternative artists. You prefer authentic, non-commercial tracks from independent artists and smaller labels.",
+      
+      vintage: "You are a music historian who specializes in classic tracks from past decades. You prefer timeless songs from the 60s, 70s, 80s, and 90s that have stood the test of time.",
+      
+      analytical: "You are a music scholar who analyzes songs based on musical theory, lyrical content, and artistic merit. You prefer songs with complex compositions, meaningful lyrics, or innovative production."
+    };
+    
+    return prompts[this.personality] || prompts.eclectic;
+  }
+
+  /**
+   * Fallback suggestions when AI is not available
+   */
+  getFallbackSuggestions(questionText) {
+    const text = questionText.toLowerCase();
+    
+    // Basic keyword matching for common questions
+    if (text.includes('beatles')) {
+      return [
+        { artist: 'The Beatles', song: 'Hey Jude', reasoning: 'Classic Beatles hit' },
+        { artist: 'The Beatles', song: 'Let It Be', reasoning: 'Iconic Beatles song' },
+        { artist: 'The Beatles', song: 'Come Together', reasoning: 'Popular Beatles track' }
+      ];
+    }
+    
+    if (text.includes('taylor swift')) {
+      return [
+        { artist: 'Taylor Swift', song: 'Shake It Off', reasoning: 'Popular Taylor Swift hit' },
+        { artist: 'Taylor Swift', song: 'Love Story', reasoning: 'Classic Taylor Swift song' },
+        { artist: 'Taylor Swift', song: 'Anti-Hero', reasoning: 'Recent Taylor Swift hit' }
+      ];
+    }
+    
+    if (text.includes('90s')) {
+      return [
+        { artist: 'Nirvana', song: 'Smells Like Teen Spirit', reasoning: '90s grunge anthem' },
+        { artist: 'Alanis Morissette', song: 'You Oughta Know', reasoning: '90s alternative hit' },
+        { artist: 'TLC', song: 'Waterfalls', reasoning: '90s R&B classic' }
+      ];
+    }
+    
+    if (text.includes('sad') || text.includes('cry')) {
+      return [
+        { artist: 'Johnny Cash', song: 'Hurt', reasoning: 'Emotionally powerful song' },
+        { artist: 'Mad World', song: 'Gary Jules', reasoning: 'Haunting and melancholic' },
+        { artist: 'The Sound of Silence', song: 'Simon & Garfunkel', reasoning: 'Classic sad song' }
+      ];
+    }
+    
+    if (text.includes('happy') || text.includes('dance')) {
+      return [
+        { artist: 'Pharrell Williams', song: 'Happy', reasoning: 'Literally about being happy' },
+        { artist: 'Bruno Mars', song: 'Uptown Funk', reasoning: 'Upbeat dance track' },
+        { artist: 'Daft Punk', song: 'Get Lucky', reasoning: 'Feel-good dance music' }
+      ];
+    }
+    
+    // Default suggestions based on personality
+    const personalityDefaults = {
+      eclectic: [
+        { artist: 'Tame Impala', song: 'The Less I Know The Better', reasoning: 'Unique psychedelic sound' },
+        { artist: 'FKA twigs', song: 'Two Weeks', reasoning: 'Innovative and creative' },
+        { artist: 'King Gizzard', song: 'Inner Cell', reasoning: 'Experimental and interesting' }
+      ],
+      mainstream: [
+        { artist: 'Ed Sheeran', song: 'Shape of You', reasoning: 'Massive mainstream hit' },
+        { artist: 'Adele', song: 'Rolling in the Deep', reasoning: 'Popular crowd favorite' },
+        { artist: 'The Weeknd', song: 'Blinding Lights', reasoning: 'Chart-topping hit' }
+      ],
+      indie: [
+        { artist: 'Arctic Monkeys', song: 'Do I Wanna Know?', reasoning: 'Indie rock favorite' },
+        { artist: 'Vampire Weekend', song: 'A-Punk', reasoning: 'Indie classic' },
+        { artist: 'The Strokes', song: 'Last Nite', reasoning: 'Indie rock anthem' }
+      ],
+      vintage: [
+        { artist: 'Fleetwood Mac', song: 'Dreams', reasoning: 'Timeless 70s classic' },
+        { artist: 'David Bowie', song: 'Heroes', reasoning: 'Iconic vintage track' },
+        { artist: 'Queen', song: 'Bohemian Rhapsody', reasoning: 'Classic rock masterpiece' }
+      ],
+      analytical: [
+        { artist: 'Radiohead', song: 'Paranoid Android', reasoning: 'Complex composition and deep lyrics' },
+        { artist: 'Pink Floyd', song: 'Comfortably Numb', reasoning: 'Musically sophisticated' },
+        { artist: 'Tool', song: 'Schism', reasoning: 'Complex time signatures and meaning' }
+      ]
+    };
+    
+    return personalityDefaults[this.personality] || personalityDefaults.eclectic;
+  }
+
+  /**
+   * Try to extract song suggestions from malformed AI response
+   */
+  extractSuggestionsFromText(text) {
+    const suggestions = [];
+    const lines = text.split('\n');
+    
+    let currentSuggestion = {};
+    
+    for (const line of lines) {
+      const lower = line.toLowerCase().trim();
+      
+      if (lower.includes('artist:') || lower.includes('"artist"')) {
+        const match = line.match(/(?:artist[":]\s*["']?)([^"',\n]+)/i);
+        if (match) currentSuggestion.artist = match[1].trim();
+      }
+      
+      if (lower.includes('song:') || lower.includes('"song"') || lower.includes('title:')) {
+        const match = line.match(/(?:(?:song|title)[":]\s*["']?)([^"',\n]+)/i);
+        if (match) currentSuggestion.song = match[1].trim();
+      }
+      
+      if (lower.includes('reasoning:') || lower.includes('"reasoning"')) {
+        const match = line.match(/(?:reasoning[":]\s*["']?)([^"',\n]+)/i);
+        if (match) currentSuggestion.reasoning = match[1].trim();
+      }
+      
+      // If we have a complete suggestion, add it
+      if (currentSuggestion.artist && currentSuggestion.song) {
+        suggestions.push({ ...currentSuggestion });
+        currentSuggestion = {};
+      }
+    }
+    
+    return suggestions.slice(0, 3); // Max 3 suggestions
+  }
+
   async searchSongs(query) {
     try {
       const response = await axios.get(`${this.apiUrl}/music/search`, {
-        params: { query, limit: 5 },
+        params: { query, limit: 8 },
         headers: { Authorization: `Bearer ${this.sessionToken}` }
       });
       
@@ -154,22 +391,39 @@ class BotWorker {
     }
   }
 
-  findBestMatch(searchResults, target) {
-    // Simple scoring based on artist and song name similarity
-    let bestMatch = searchResults[0];
+  /**
+   * Find best match between search results and AI suggestion
+   */
+  findBestMatch(searchResults, suggestion) {
+    let bestMatch = searchResults[0]; // Default to first result
     let bestScore = 0;
+    
+    const targetArtist = suggestion.artist.toLowerCase();
+    const targetSong = suggestion.song.toLowerCase();
     
     for (const result of searchResults) {
       let score = 0;
+      const resultArtist = result.artist.toLowerCase();
+      const resultSong = result.name.toLowerCase();
       
-      if (result.artist.toLowerCase().includes(target.artist.toLowerCase()) ||
-          target.artist.toLowerCase().includes(result.artist.toLowerCase())) {
-        score += 2;
+      // Artist matching (most important)
+      if (resultArtist === targetArtist) {
+        score += 100;
+      } else if (resultArtist.includes(targetArtist) || targetArtist.includes(resultArtist)) {
+        score += 50;
       }
       
-      if (result.name.toLowerCase().includes(target.song.toLowerCase()) ||
-          target.song.toLowerCase().includes(result.name.toLowerCase())) {
-        score += 3;
+      // Song matching
+      if (resultSong === targetSong) {
+        score += 80;
+      } else if (resultSong.includes(targetSong) || targetSong.includes(resultSong)) {
+        score += 40;
+      }
+      
+      // Avoid instrumentals, karaoke, etc.
+      if (resultSong.includes('instrumental') || resultSong.includes('karaoke') || 
+          resultSong.includes('cover') || resultSong.includes('remix')) {
+        score -= 30;
       }
       
       if (score > bestScore) {
@@ -178,7 +432,32 @@ class BotWorker {
       }
     }
     
+    console.log(`Best match for "${suggestion.artist} - ${suggestion.song}": ${bestMatch.name} by ${bestMatch.artist} (score: ${bestScore})`);
     return bestMatch;
+  }
+
+  /**
+   * Check if the match is good enough to use
+   */
+  isGoodMatch(match, suggestion) {
+    const matchArtist = match.artist.toLowerCase();
+    const targetArtist = suggestion.artist.toLowerCase();
+    
+    // Must have reasonable artist match
+    return matchArtist.includes(targetArtist) || 
+           targetArtist.includes(matchArtist) ||
+           this.areArtistsSimilar(matchArtist, targetArtist);
+  }
+
+  /**
+   * Check if artists are similar (handles common variations)
+   */
+  areArtistsSimilar(artist1, artist2) {
+    // Remove common prefixes/suffixes
+    const clean1 = artist1.replace(/^the\s+/i, '').replace(/\s+band$/i, '');
+    const clean2 = artist2.replace(/^the\s+/i, '').replace(/\s+band$/i, '');
+    
+    return clean1.includes(clean2) || clean2.includes(clean1);
   }
 
   async submitSong(song) {
@@ -235,8 +514,8 @@ class BotWorker {
     
     setTimeout(async () => {
       try {
-        // Simple voting logic - in production, use AI
-        const choice = votableSubmissions[Math.floor(Math.random() * votableSubmissions.length)];
+        // AI-powered voting (or fallback to personality-based voting)
+        const choice = await this.chooseVote(votableSubmissions);
         
         await axios.post(`${this.apiUrl}/game/vote`, {
           gameId: this.gameId,
@@ -251,6 +530,55 @@ class BotWorker {
         console.error('Failed to vote:', error.message);
       }
     }, delay);
+  }
+
+  /**
+   * AI-powered voting decision
+   */
+  async chooseVote(submissions) {
+    // For now, use personality-based voting
+    // You could extend this to use AI for more sophisticated voting
+    
+    const votingStyles = {
+      eclectic: () => {
+        // Prefers unique, lesser-known tracks
+        return submissions.find(s => !this.isMainstreamSong(s)) || submissions[0];
+      },
+      mainstream: () => {
+        // Prefers popular, well-known tracks
+        return submissions.find(s => this.isMainstreamSong(s)) || submissions[0];
+      },
+      indie: () => {
+        // Prefers alternative artists
+        return submissions.find(s => this.isIndieArtist(s.artist)) || submissions[0];
+      },
+      vintage: () => {
+        // Prefers older songs
+        return submissions.find(s => this.isVintageSong(s)) || submissions[0];
+      },
+      analytical: () => {
+        // Prefers songs with complex/meaningful content
+        return submissions[Math.floor(Math.random() * submissions.length)]; // Random for now
+      }
+    };
+    
+    const votingFunction = votingStyles[this.personality] || votingStyles.mainstream;
+    return votingFunction();
+  }
+
+  isMainstreamSong(submission) {
+    const mainstream = ['taylor swift', 'ed sheeran', 'adele', 'bruno mars', 'the weeknd'];
+    return mainstream.some(artist => submission.artist.toLowerCase().includes(artist));
+  }
+
+  isIndieArtist(artist) {
+    const indie = ['arctic monkeys', 'vampire weekend', 'tame impala', 'the strokes'];
+    return indie.some(indieArtist => artist.toLowerCase().includes(indieArtist));
+  }
+
+  isVintageSong(submission) {
+    const vintage = ['beatles', 'queen', 'led zeppelin', 'pink floyd', 'david bowie'];
+    return vintage.some(artist => submission.artist.toLowerCase().includes(artist));
   }
 
   async handleResults() {
@@ -321,4 +649,3 @@ exports.handler = async (event, context) => {
     };
   }
 };
-
