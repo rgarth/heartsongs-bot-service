@@ -96,30 +96,90 @@ exports.handler = async (event, context) => {
     console.log(`Using API URL: ${process.env.HEARTSONGS_API_URL}`);
     
     try {
-      const registrationResponse = await axios.post(`${process.env.HEARTSONGS_API_URL}/auth/register-anonymous`, {
-        username: botName
-      }, {
-        timeout: 10000,
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
+      // Step 1: Register the bot
+      console.log('Step 1: Registering bot with Heart Songs API...');
+      let registrationResponse;
+      try {
+        registrationResponse = await axios.post(`${process.env.HEARTSONGS_API_URL}/auth/register-anonymous`, {
+          username: botName
+        }, {
+          timeout: 10000,
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        console.log('Registration response status:', registrationResponse.status);
+        console.log('Registration response data:', registrationResponse.data);
+        
+      } catch (regError) {
+        console.error('Bot registration failed:', {
+          message: regError.message,
+          status: regError.response?.status,
+          data: regError.response?.data,
+          url: regError.config?.url
+        });
+        
+        return {
+          statusCode: 500,
+          headers: { 
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          },
+          body: JSON.stringify({
+            error: 'Bot registration failed',
+            details: regError.response?.data || regError.message,
+            step: 'registration',
+            apiUrl: `${process.env.HEARTSONGS_API_URL}/auth/register-anonymous`,
+            botName: botName
+          })
+        };
+      }
       
       const { user: botUser, sessionToken } = registrationResponse.data;
       console.log(`Bot registered successfully: ${botUser.displayName} (ID: ${botUser.id})`);
       
-      // Join the game
-      console.log(`Bot joining game: ${gameCode}`);
-      
-      const joinResponse = await axios.post(`${process.env.HEARTSONGS_API_URL}/game/join`, {
-        gameCode: gameCode,
-        userId: botUser.id
-      }, {
-        headers: { Authorization: `Bearer ${sessionToken}` },
-        timeout: 10000
-      });
-      
-      console.log('Bot joined game successfully:', joinResponse.data);
+      // Step 2: Join the game
+      console.log('Step 2: Bot joining game...');
+      let joinResponse;
+      try {
+        joinResponse = await axios.post(`${process.env.HEARTSONGS_API_URL}/game/join`, {
+          gameCode: gameCode,
+          userId: botUser.id
+        }, {
+          headers: { Authorization: `Bearer ${sessionToken}` },
+          timeout: 10000
+        });
+        
+        console.log('Join response status:', joinResponse.status);
+        console.log('Join response data:', joinResponse.data);
+        
+      } catch (joinError) {
+        console.error('Game join failed:', {
+          message: joinError.message,
+          status: joinError.response?.status,
+          data: joinError.response?.data,
+          url: joinError.config?.url,
+          gameCode: gameCode,
+          botUserId: botUser.id
+        });
+        
+        return {
+          statusCode: 500,
+          headers: { 
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          },
+          body: JSON.stringify({
+            error: 'Game join failed',
+            details: joinError.response?.data || joinError.message,
+            step: 'game_join',
+            gameCode: gameCode,
+            botId: botUser.id,
+            botName: botUser.displayName
+          })
+        };
+      }
       
       // Start the bot worker function
       const workerPayload = {
@@ -158,65 +218,25 @@ exports.handler = async (event, context) => {
         })
       };
       
-    } catch (apiError) {
-      console.error('Heart Songs API Error:', {
-        message: apiError.message,
-        code: apiError.code,
-        status: apiError.response?.status,
-        statusText: apiError.response?.statusText,
-        data: apiError.response?.data,
-        url: apiError.config?.url,
-        method: apiError.config?.method
-      });
+    } catch (workerError) {
+      console.error('Bot worker invocation failed:', workerError.message);
       
-      // More specific error handling
-      if (apiError.code === 'ENOTFOUND' || apiError.code === 'ECONNREFUSED') {
-        return {
-          statusCode: 500,
-          headers: { 
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
-          },
-          body: JSON.stringify({
-            error: 'Cannot reach Heart Songs API',
-            details: `Connection failed to ${process.env.HEARTSONGS_API_URL}: ${apiError.message}`,
-            apiUrl: process.env.HEARTSONGS_API_URL
-          })
-        };
-      }
-      
-      if (apiError.response?.status === 404) {
-        return {
-          statusCode: 500,
-          headers: { 
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
-          },
-          body: JSON.stringify({
-            error: 'Heart Songs API endpoint not found',
-            details: `404 error from ${apiError.config?.url}`,
-            apiUrl: process.env.HEARTSONGS_API_URL,
-            suggestion: 'Check if the API endpoint exists and is accessible'
-          })
-        };
-      }
-      
-      if (apiError.response?.status === 400) {
-        return {
-          statusCode: 500,
-          headers: { 
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
-          },
-          body: JSON.stringify({
-            error: 'Bad request to Heart Songs API',
-            details: apiError.response?.data || apiError.message,
-            apiUrl: process.env.HEARTSONGS_API_URL
-          })
-        };
-      }
-      
-      throw apiError; // Re-throw for general error handler
+      // Even if worker fails, the bot joined the game successfully
+      return {
+        statusCode: 200,
+        headers: { 
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        },
+        body: JSON.stringify({
+          success: true,
+          botId: botUser.id,
+          botName: botUser.displayName,
+          personality: botConfig.name,
+          message: 'Bot joined game but worker startup may have failed',
+          warning: workerError.message
+        })
+      };
     }
     
   } catch (error) {
