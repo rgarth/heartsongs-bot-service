@@ -18,6 +18,7 @@ class BotWorker {
     this.gameState = null;
     this.hasSubmitted = false;
     this.hasVoted = false;
+    this._isSelectingQuestion = false;
     
     // Debug environment variables
     console.log(`Bot ${this.botName} Environment Check:`);
@@ -679,25 +680,40 @@ Format your response as JSON:
       console.log(`Bot ${this.botName} is waiting for the winner to choose a question...`);
       return;
     }
-
+    
     // Check if we've already selected a question
     if (this.gameState.winnerSelectedQuestion && this.gameState.winnerSelectedQuestion.text) {
       console.log(`Bot ${this.botName} has already selected a question, waiting for host to start...`);
       return;
     }
-
+    
+    // Prevent multiple simultaneous question selection attempts
+    if (this._isSelectingQuestion) {
+      console.log(`Bot ${this.botName} is already in the process of selecting a question...`);
+      return;
+    }
+      
+    this._isSelectingQuestion = true;
     console.log(`Bot ${this.botName} won the round and needs to choose the next question!`);
-
+    
     try {
       // Give the bot some time to "think" before selecting
       const thinkingDelay = 3000 + Math.random() * 5000; // 3-8 seconds
-      
+        
       setTimeout(async () => {
-        await this.selectWinnerQuestion();
+        try {
+          await this.selectWinnerQuestion();
+        } catch (error) {
+          console.error(`Bot ${this.botName} error during question selection:`, error.message);
+        } finally {
+          // Reset the flag after question selection attempt is complete
+          this._isSelectingQuestion = false;
+        }
       }, thinkingDelay);
-      
+        
     } catch (error) {
       console.error(`Bot ${this.botName} failed to handle question selection:`, error.message);
+      this._isSelectingQuestion = false; // Reset flag on error
     }
   }
 
