@@ -666,17 +666,6 @@ Format your response as JSON:
   */
   async submitSong(song) {
     try {
-      // Double-check for duplicates right before submission
-      // (in case another player submitted while we were processing)
-      await this.getGameState(); // Refresh game state
-    
-      if (this.isSongAlreadySubmitted(song)) {
-        console.log(`Bot ${this.botName} ⚠️ Song became duplicate during processing: "${song.name}" by ${song.artist}`);
-        console.log(`Bot ${this.botName} will pass instead`);
-        await this.passTurn();
-       return;
-      }
-    
       await axios.post(`${this.apiUrl}/game/submit`, {
         gameId: this.gameId,
         userId: this.botId,
@@ -688,19 +677,121 @@ Format your response as JSON:
       }, {
         headers: { Authorization: `Bearer ${this.sessionToken}` }
       });
-    
-      console.log(`Bot ${this.botName} ✅ submitted: "${song.name}" by ${song.artist}`);
-    
+      
+      console.log(`Bot ${this.botName} successfully submitted: "${song.name}" by ${song.artist}`);
     } catch (error) {
       console.error(`Bot ${this.botName} failed to submit song:`, error.message);
-    
-      // If submission failed, it might be due to a duplicate
-      // The server should handle this, but we can add a fallback
-      if (error.response?.data?.message?.includes('duplicate') || 
-        error.response?.data?.message?.includes('already selected')) {
-        console.log(`Bot ${this.botName} submission rejected as duplicate, will pass`);
+      
+      // Handle duplicate song error gracefully
+      if (error.response?.status === 409 && error.response?.data?.errorCode === 'DUPLICATE_SONG') {
+        console.log(`Bot ${this.botName} ⚠️ Song already selected: "${song.name}" by ${song.artist}`);
+        console.log(`Bot ${this.botName} 🔄 Attempting to find alternative...`);
+        
+        // Try to find an alternative song
+        await this.handleDuplicateAndRetry();
+      } else {
+        // For other errors, just pass the turn
+        console.log(`Bot ${this.botName} ❌ Submission failed with other error, passing turn`);
         await this.passTurn();
       }
+    }
+  }
+
+  /**
+   * Handle duplicate song error by finding an alternative
+   */
+  async handleDuplicateAndRetry() {
+    try {
+      console.log(`Bot ${this.botName} looking for alternative song choices...`);
+      
+      // Get fresh game state to see what's already submitted
+      await this.getGameState();
+      
+      // Get the current question again
+      const currentQuestion = this.gameState.currentQuestion;
+      if (!currentQuestion) {
+        console.log(`Bot ${this.botName} ❌ No current question found, passing turn`);
+        await this.passTurn();
+        return;
+      }
+      
+      // Get already submitted song IDs to avoid
+      const submittedSongIds = this.gameState.submissions
+        .filter(s => !s.hasPassed)
+        .map(s => s.songId);
+      
+      console.log(`Bot ${this.botName} avoiding already submitted songs:`, submittedSongIds);
+      
+      // Try to get alternative AI suggestions
+      const aiSuggestions = await this.getAISongSuggestions(currentQuestion.text);
+      
+      if (!aiSuggestions || aiSuggestions.length === 0) {
+        console.log(`Bot ${this.botName} ❌ No alternative AI suggestions, passing turn`);
+        await this.passTurn();
+        return;
+      }
+      
+      // Try each suggestion until we find one that's not already submitted
+      for (let i = 0; i < aiSuggestions.length; i++) {
+        const suggestion = aiSuggestions[i];
+        console.log(`Bot ${this.botName} trying alternative suggestion ${i + 1}/${aiSuggestions.length}: "${suggestion.artist} - ${suggestion.song}"`);
+        
+        // Search for the specific song
+        const searchQuery = `${suggestion.artist} ${suggestion.song}`;
+        const searchResults = await this.searchSongs(searchQuery);
+        
+        if (searchResults.length > 0) {
+          const bestMatch = this.findBestMatch(searchResults, suggestion);
+          
+          // Check if this song is already submitted
+          if (submittedSongIds.includes(bestMatch.id)) {
+            console.log(`Bot ${this.botName} ⏭️ "${bestMatch.name}" also already submitted, trying next...`);
+            continue;
+          }
+          
+          if (this.isGoodMatch(bestMatch, suggestion)) {
+            console.log(`Bot ${this.botName} ✅ Found alternative: "${bestMatch.name}" by ${bestMatch.artist}`);
+            
+            // Try to submit the alternative
+            try {
+              await axios.post(`${this.apiUrl}/game/submit`, {
+                gameId: this.gameId,
+                userId: this.botId,
+                songId: bestMatch.id,
+                songName: bestMatch.name,
+                artist: bestMatch.artist,
+                albumCover: bestMatch.albumArt || '',
+                hasPassed: false
+              }, {
+                headers: { Authorization: `Bearer ${this.sessionToken}` }
+              });
+              
+              console.log(`Bot ${this.botName} ✅ Successfully submitted alternative: "${bestMatch.name}" by ${bestMatch.artist}`);
+              return; // Success!
+              
+            } catch (retryError) {
+              if (retryError.response?.status === 409) {
+                console.log(`Bot ${this.botName} ⚠️ Alternative also duplicated, trying next...`);
+                continue; // Try next suggestion
+              } else {
+                console.error(`Bot ${this.botName} ❌ Failed to submit alternative:`, retryError.message);
+                break; // Break on other errors
+              }
+            }
+          }
+        }
+        
+        // Small delay between searches
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      // If we get here, no alternatives worked
+      console.log(`Bot ${this.botName} ❌ Could not find any suitable alternatives, passing turn`);
+      await this.passTurn();
+      
+    } catch (error) {
+      console.error(`Bot ${this.botName} ❌ Error handling duplicate song:`, error.message);
+      await this.passTurn();
     }
   }
 
