@@ -240,7 +240,7 @@ Format your response as JSON:
       console.log(`Bot ${this.botName}: Full prompt length: ${prompt.length}`);
 
       const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-        model: 'gpt-3.5-turbo',
+        model: 'gpt-4o-mini',
         messages: [
           {
             role: 'system',
@@ -787,6 +787,7 @@ Create 1 creative, engaging music question that:
 - Fits your personality as described above
 - Is not too specific (avoid naming exact artists unless that's the point)
 - Is clear and easy to understand
+- The question must be answerrable with a song title and artist which is well-known or recognizable
 
 Examples of good questions:
 - "What song would you play during a thunderstorm?"
@@ -803,7 +804,7 @@ Format your response as JSON:
 }`;
 
       const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-        model: 'gpt-3.5-turbo',
+        model: 'gpt-4o-mini',
         messages: [
           {
             role: 'system',
