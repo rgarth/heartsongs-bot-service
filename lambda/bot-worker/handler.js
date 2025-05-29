@@ -126,75 +126,192 @@ class BotWorker {
   }
 
   /**
-  * AI-powered song selection with randomized suggestion order
-  */
+   * Enhanced chooseSongForQuestion with detailed debugging
+   */
   async chooseSongForQuestion(question) {
-    try {
-      console.log(`Bot ${this.botName} thinking about: "${question.text}"`);
-      console.log(`Bot ${this.botName} personality: ${this.personality}`);
-        
-      // Step 1: Use AI to analyze the question and suggest songs
+  try {
+      console.log(`🤖 Bot ${this.botName} starting song selection process...`);
+      console.log(`🎯 Question: "${question.text}"`);
+      console.log(`🎭 Personality: ${this.personality}`);
+      console.log(`🔑 OpenAI API Key available: ${!!this.openaiApiKey}`);
+      
+      // Step 1: Get AI suggestions with detailed logging
+      console.log(`🧠 Step 1: Getting AI suggestions...`);
       const aiSuggestions = await this.getAISongSuggestions(question.text);
-      console.log(`Bot ${this.botName} received ${aiSuggestions?.length || 0} AI suggestions:`, aiSuggestions);
-        
+      
+      console.log(`📋 AI Suggestions Result:`, {
+      received: aiSuggestions !== null,
+      count: aiSuggestions?.length || 0,
+      suggestions: aiSuggestions
+      });
+      
       if (!aiSuggestions || aiSuggestions.length === 0) {
-        console.log(`Bot ${this.botName} got no AI suggestions, will pass`);
-        return null;
-      }
-        
-      // Step 2: Randomize the order of AI suggestions
-      const shuffledSuggestions = [...aiSuggestions].sort(() => Math.random() - 0.5);
-      console.log(`Bot ${this.botName} randomized suggestion order`);
-        
-        // Step 3: Try each randomized suggestion until we find a match
-        for (let i = 0; i < shuffledSuggestions.length; i++) {
-          const suggestion = shuffledSuggestions[i];
-          console.log(`Bot ${this.botName} trying suggestion ${i + 1}/${shuffledSuggestions.length}: "${suggestion.artist} - ${suggestion.song}"`);
-          console.log(`Bot ${this.botName} AI reasoning: ${suggestion.reasoning}`);
-        
-          // Search for the specific song
-          const searchQuery = `${suggestion.artist} ${suggestion.song}`;
-          console.log(`Bot ${this.botName} searching with query: "${searchQuery}"`);
-        
-          const searchResults = await this.searchSongs(searchQuery);
-          console.log(`Bot ${this.botName} got ${searchResults.length} search results`);
-        
-          if (searchResults.length > 0) {
-            // Log all search results for debugging
-            console.log(`Bot ${this.botName} search results:`);
-            searchResults.forEach((result, idx) => {
-            console.log(`  ${idx + 1}. "${result.name}" by ${result.artist}`);
-          });
-            
-          // Find the best match for this specific suggestion
-          const bestMatch = this.findBestMatch(searchResults, suggestion);
-          console.log(`Bot ${this.botName} best match: "${bestMatch.name}" by ${bestMatch.artist}`);
-            
-          if (this.isGoodMatch(bestMatch, suggestion)) {
-            console.log(`Bot ${this.botName} ✅ SELECTED: "${bestMatch.name}" by ${bestMatch.artist}`);
-            console.log(`Bot ${this.botName} ✅ Original AI suggestion: "${suggestion.artist} - ${suggestion.song}"`);
-            console.log(`Bot ${this.botName} ✅ AI reasoning: ${suggestion.reasoning}`);
-            return bestMatch;
-          } else {
-            console.log(`Bot ${this.botName} ❌ Match not good enough, trying next suggestion...`);
-          }
-        } else {
-          console.log(`Bot ${this.botName} ❌ No search results for "${searchQuery}", trying next suggestion...`);
-        }
-        
-        // Small delay between searches
-        await new Promise(resolve => setTimeout(resolve, 500));
-       }
-        
-       console.log(`Bot ${this.botName} ❌ Couldn't find any of the AI suggestions in the database, will pass`);
-       return null;
-        
-    } catch (error) {
-      console.error(`Bot ${this.botName} AI song selection failed:`, error.message);
-      console.error(`Bot ${this.botName} Full error:`, error);
+      console.log(`❌ Bot ${this.botName} got no AI suggestions, will pass`);
       return null;
-    }
+      }
+      
+      // Step 2: Randomize order
+      console.log(`🔀 Step 2: Randomizing suggestion order...`);
+      const shuffledSuggestions = [...aiSuggestions].sort(() => Math.random() - 0.5);
+      console.log(`🔀 Randomized order:`, shuffledSuggestions.map((s, i) => `${i + 1}. ${s.artist} - ${s.song}`));
+      
+      // Step 3: Try each suggestion with detailed logging
+      console.log(`🔍 Step 3: Searching for songs in database...`);
+      
+      for (let i = 0; i < shuffledSuggestions.length; i++) {
+      const suggestion = shuffledSuggestions[i];
+      console.log(`\n🎵 Trying suggestion ${i + 1}/${shuffledSuggestions.length}:`);
+      console.log(`   Artist: "${suggestion.artist}"`);
+      console.log(`   Song: "${suggestion.song}"`);
+      console.log(`   Reasoning: "${suggestion.reasoning}"`);
+      
+      // Search for the song
+      const searchQuery = `${suggestion.artist} ${suggestion.song}`;
+      console.log(`🔎 Search query: "${searchQuery}"`);
+      
+      const searchResults = await this.searchSongs(searchQuery);
+      console.log(`📊 Search results: ${searchResults.length} found`);
+      
+      if (searchResults.length === 0) {
+          console.log(`❌ No search results for "${searchQuery}"`);
+          continue;
+      }
+      
+      // Log all search results
+      console.log(`📃 All search results:`);
+      searchResults.forEach((result, idx) => {
+          console.log(`   ${idx + 1}. "${result.name}" by ${result.artist} (ID: ${result.id})`);
+      });
+      
+      // Find best match
+      console.log(`🎯 Finding best match...`);
+      const bestMatch = this.findBestMatch(searchResults, suggestion);
+      console.log(`🎯 Best match: "${bestMatch.name}" by ${bestMatch.artist}`);
+      
+      // Check if it's a good match
+      console.log(`✅ Checking if match is good enough...`);
+      const isGood = this.isGoodMatch(bestMatch, suggestion);
+      console.log(`✅ Match quality: ${isGood ? 'GOOD' : 'NOT GOOD ENOUGH'}`);
+      
+      if (isGood) {
+          console.log(`🎉 Bot ${this.botName} SELECTED: "${bestMatch.name}" by ${bestMatch.artist}`);
+          console.log(`🎉 From AI suggestion: "${suggestion.artist} - ${suggestion.song}"`);
+          console.log(`🎉 AI reasoning: ${suggestion.reasoning}`);
+          return bestMatch;
+      } else {
+          console.log(`❌ Match "${bestMatch.name}" by ${bestMatch.artist} not good enough for suggestion "${suggestion.artist} - ${suggestion.song}"`);
+          
+          // Let's see why it failed the match test
+          console.log(`🔍 Match analysis:`);
+          console.log(`   Target artist: "${suggestion.artist.toLowerCase()}"`);
+          console.log(`   Found artist: "${bestMatch.artist.toLowerCase()}"`);
+          console.log(`   Target song: "${suggestion.song.toLowerCase()}"`);
+          console.log(`   Found song: "${bestMatch.name.toLowerCase()}"`);
+          console.log(`   Artist includes check: ${bestMatch.artist.toLowerCase().includes(suggestion.artist.toLowerCase())}`);
+          console.log(`   Reverse artist check: ${suggestion.artist.toLowerCase().includes(bestMatch.artist.toLowerCase())}`);
+      }
+      
+      // Small delay between searches
+      await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      console.log(`❌ Bot ${this.botName} couldn't find any viable songs from AI suggestions, will pass`);
+      return null;
+      
+  } catch (error) {
+      console.error(`💥 Bot ${this.botName} song selection crashed:`, error.message);
+      console.error(`💥 Full error:`, error);
+      return null;
   }
+  }
+
+/**
+ * Enhanced song search with debugging
+ */
+async searchSongs(query) {
+  try {
+    console.log(`🔍 Searching songs with query: "${query}"`);
+    console.log(`🔗 API URL: ${this.apiUrl}/music/search`);
+    console.log(`🔑 Session token available: ${!!this.sessionToken}`);
+    
+    const response = await axios.get(`${this.apiUrl}/music/search`, {
+      params: { query, limit: 8 },
+      headers: { Authorization: `Bearer ${this.sessionToken}` },
+      timeout: 10000
+    });
+    
+    console.log(`✅ Search API responded with status: ${response.status}`);
+    console.log(`📊 Found ${response.data.length} results`);
+    
+    return response.data;
+  } catch (error) {
+    console.error(`❌ Song search API failed:`, {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data,
+      query: query
+    });
+    return [];
+  }
+}
+
+/**
+ * Enhanced match checking with detailed logging
+ */
+isGoodMatch(match, suggestion) {
+  const matchArtist = match.artist.toLowerCase().trim();
+  const targetArtist = suggestion.artist.toLowerCase().trim();
+  const matchSong = match.name.toLowerCase().trim();
+  const targetSong = suggestion.song.toLowerCase().trim();
+  
+  console.log(`🔍 Detailed match analysis:`);
+  console.log(`   Target: "${targetArtist}" - "${targetSong}"`);
+  console.log(`   Found:  "${matchArtist}" - "${matchSong}"`);
+  
+  // Check artist similarity
+  const artistMatch1 = matchArtist.includes(targetArtist);
+  const artistMatch2 = targetArtist.includes(matchArtist);
+  const artistSimilar = this.areArtistsSimilar(matchArtist, targetArtist);
+  
+  console.log(`   Artist checks:`);
+  console.log(`     Found includes target: ${artistMatch1}`);
+  console.log(`     Target includes found: ${artistMatch2}`);
+  console.log(`     Artists similar: ${artistSimilar}`);
+  
+  // Check song similarity (optional - might be too strict)
+  const songMatch1 = matchSong.includes(targetSong);
+  const songMatch2 = targetSong.includes(matchSong);
+  
+  console.log(`   Song checks (for info only):`);
+  console.log(`     Found includes target: ${songMatch1}`);
+  console.log(`     Target includes found: ${songMatch2}`);
+  
+  const isGood = artistMatch1 || artistMatch2 || artistSimilar;
+  console.log(`   Overall match result: ${isGood}`);
+  
+  return isGood;
+}
+
+/**
+ * Test the AI suggestions separately
+ */
+async testAISuggestions(questionText) {
+  console.log(`🧪 Testing AI suggestions for: "${questionText}"`);
+  
+  if (!this.openaiApiKey) {
+    console.log(`❌ No OpenAI API key available`);
+    return null;
+  }
+  
+  try {
+    const suggestions = await this.getAISongSuggestions(questionText);
+    console.log(`🧪 AI Test Result:`, suggestions);
+    return suggestions;
+  } catch (error) {
+    console.log(`🧪 AI Test Failed:`, error.message);
+    return null;
+  }
+}
 
   /**
    * Get song suggestions from OpenAI based on the question
@@ -202,30 +319,25 @@ class BotWorker {
   async getAISongSuggestions(questionText) {
     console.log(`Bot ${this.botName} starting AI suggestion process...`);
     console.log(`OpenAI API Key available: ${!!this.openaiApiKey}`);
-    console.log(`OpenAI API Key length: ${this.openaiApiKey?.length || 0}`);
-    console.log(`OpenAI API Key preview: ${this.openaiApiKey ? this.openaiApiKey.substring(0, 7) + '...' : 'none'}`);
     
     if (!this.openaiApiKey) {
-      console.warn(`Bot ${this.botName}: OpenAI API key not available, using fallback logic`);
-      return this.getFallbackSuggestions(questionText);
+      console.warn(`Bot ${this.botName}: OpenAI API key not available, will pass`);
+      return null;
     }
 
     try {
       const personalityPrompt = this.getPersonalityPrompt();
       console.log(`Bot ${this.botName}: Using personality: ${this.personality}`);
-      console.log(`Bot ${this.botName}: Personality prompt: ${personalityPrompt.substring(0, 100)}...`);
       
       const prompt = `${personalityPrompt}
 
 Question: "${questionText}"
-Other players have already chosen: ${existingSubmissions}
 
 Please suggest 5 songs that would be good answers to this question. Consider:
 - The literal meaning of the question
 - Popular and well-known songs that people would recognize
 - Songs that fit the mood, era, or genre mentioned in the question
 - Your personality as described above
-- Are different from existing submissions
 
 For each song, provide:
 - Artist name (exact spelling)
@@ -325,9 +437,9 @@ Format your response as JSON:
         console.error(`Bot ${this.botName}: OpenAI API request timed out`);
       }
       
-      // Fallback to basic logic
-      console.log(`Bot ${this.botName}: Using fallback suggestions due to API error`);
-      return this.getFallbackSuggestions(questionText);
+      // No fallback - just return null and let bot pass
+      console.log(`Bot ${this.botName}: Will pass due to AI API error`);
+      return null;
     }
   }
 
