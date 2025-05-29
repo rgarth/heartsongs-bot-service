@@ -126,54 +126,72 @@ class BotWorker {
   }
 
   /**
-  * Enhanced song selection that avoids duplicates
+  * AI-powered song selection with randomized suggestion order
   */
   async chooseSongForQuestion(question) {
     try {
       console.log(`Bot ${this.botName} thinking about: "${question.text}"`);
+      console.log(`Bot ${this.botName} personality: ${this.personality}`);
         
-      // Get AI suggestions
+      // Step 1: Use AI to analyze the question and suggest songs
       const aiSuggestions = await this.getAISongSuggestions(question.text);
+      console.log(`Bot ${this.botName} received ${aiSuggestions?.length || 0} AI suggestions:`, aiSuggestions);
         
       if (!aiSuggestions || aiSuggestions.length === 0) {
-       console.log(`Bot ${this.botName} got no AI suggestions, will pass`);
+        console.log(`Bot ${this.botName} got no AI suggestions, will pass`);
         return null;
       }
         
-      // Try each suggestion, skipping duplicates
-      for (let i = 0; i < aiSuggestions.length; i++) {
-      const suggestion = aiSuggestions[i];
-      console.log(`Bot ${this.botName} trying suggestion ${i + 1}/${aiSuggestions.length}: "${suggestion.artist} - ${suggestion.song}"`);
+      // Step 2: Randomize the order of AI suggestions
+      const shuffledSuggestions = [...aiSuggestions].sort(() => Math.random() - 0.5);
+      console.log(`Bot ${this.botName} randomized suggestion order`);
         
-      const searchResults = await this.searchSongs(`${suggestion.artist} ${suggestion.song}`);
+        // Step 3: Try each randomized suggestion until we find a match
+        for (let i = 0; i < shuffledSuggestions.length; i++) {
+          const suggestion = shuffledSuggestions[i];
+          console.log(`Bot ${this.botName} trying suggestion ${i + 1}/${shuffledSuggestions.length}: "${suggestion.artist} - ${suggestion.song}"`);
+          console.log(`Bot ${this.botName} AI reasoning: ${suggestion.reasoning}`);
         
-      if (searchResults.length > 0) {
-        // Try each search result until we find one that's not a duplicate
-        for (const result of searchResults) {
-          const bestMatch = this.findBestMatch([result], suggestion);
+          // Search for the specific song
+          const searchQuery = `${suggestion.artist} ${suggestion.song}`;
+          console.log(`Bot ${this.botName} searching with query: "${searchQuery}"`);
+        
+          const searchResults = await this.searchSongs(searchQuery);
+          console.log(`Bot ${this.botName} got ${searchResults.length} search results`);
+        
+          if (searchResults.length > 0) {
+            // Log all search results for debugging
+            console.log(`Bot ${this.botName} search results:`);
+            searchResults.forEach((result, idx) => {
+            console.log(`  ${idx + 1}. "${result.name}" by ${result.artist}`);
+          });
+            
+          // Find the best match for this specific suggestion
+          const bestMatch = this.findBestMatch(searchResults, suggestion);
+          console.log(`Bot ${this.botName} best match: "${bestMatch.name}" by ${bestMatch.artist}`);
             
           if (this.isGoodMatch(bestMatch, suggestion)) {
-            // Check if this song has already been submitted
-            if (this.isSongAlreadySubmitted(bestMatch)) {
-              console.log(`Bot ${this.botName} ⚠️ Song already submitted by another player: "${bestMatch.name}" by ${bestMatch.artist}`);
-              continue; // Try next search result
-            }
-                
             console.log(`Bot ${this.botName} ✅ SELECTED: "${bestMatch.name}" by ${bestMatch.artist}`);
+            console.log(`Bot ${this.botName} ✅ Original AI suggestion: "${suggestion.artist} - ${suggestion.song}"`);
+            console.log(`Bot ${this.botName} ✅ AI reasoning: ${suggestion.reasoning}`);
             return bestMatch;
+          } else {
+            console.log(`Bot ${this.botName} ❌ Match not good enough, trying next suggestion...`);
           }
+        } else {
+          console.log(`Bot ${this.botName} ❌ No search results for "${searchQuery}", trying next suggestion...`);
         }
-      }
         
-      // Small delay between suggestions
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
+        // Small delay between searches
+        await new Promise(resolve => setTimeout(resolve, 500));
+       }
         
-    console.log(`Bot ${this.botName} ❌ All AI suggestions were either unavailable or already submitted, will pass`);
-    return null;
+       console.log(`Bot ${this.botName} ❌ Couldn't find any of the AI suggestions in the database, will pass`);
+       return null;
         
     } catch (error) {
       console.error(`Bot ${this.botName} AI song selection failed:`, error.message);
+      console.error(`Bot ${this.botName} Full error:`, error);
       return null;
     }
   }
@@ -200,12 +218,14 @@ class BotWorker {
       const prompt = `${personalityPrompt}
 
 Question: "${questionText}"
+Other players have already chosen: ${existingSubmissions}
 
-Please suggest 3 songs that would be good answers to this question. Consider:
+Please suggest 5 songs that would be good answers to this question. Consider:
 - The literal meaning of the question
 - Popular and well-known songs that people would recognize
 - Songs that fit the mood, era, or genre mentioned in the question
 - Your personality as described above
+- Are different from existing submissions
 
 For each song, provide:
 - Artist name (exact spelling)
