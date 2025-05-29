@@ -1,6 +1,10 @@
+# heartsongs-bot-service/serverless.yml
 service: heartsongs-bot-service
 
 frameworkVersion: '3'
+
+# Enable native dotenv support
+useDotenv: true
 
 provider:
   name: aws
@@ -10,6 +14,7 @@ provider:
   
   environment:
     HEARTSONGS_API_URL: ${env:HEARTSONGS_API_URL}
+    OPENAI_API_KEY: ${env:OPENAI_API_KEY}
     SERVICE_NAME: ${self:service}
     STAGE: ${self:provider.stage}
   
@@ -23,6 +28,18 @@ provider:
             - arn:aws:lambda:${self:provider.region}:*:function:${self:service}-${self:provider.stage}-*
 
 functions:
+  debug:
+    handler: lambda/debug/handler.handler
+    timeout: 30
+    events:
+      - http:
+          path: /debug
+          method: get
+          cors: true
+    environment:
+      HEARTSONGS_API_URL: ${env:HEARTSONGS_API_URL}
+      OPENAI_API_KEY: ${env:OPENAI_API_KEY}
+
   spawn-bot:
     handler: lambda/spawn-bot/handler.handler
     timeout: 30
@@ -33,18 +50,23 @@ functions:
           cors: true
     environment:
       HEARTSONGS_API_URL: ${env:HEARTSONGS_API_URL}
+      OPENAI_API_KEY: ${env:OPENAI_API_KEY}
 
   bot-worker:
     handler: lambda/bot-worker/handler.handler
     timeout: 900 # 15 minutes
     environment:
       HEARTSONGS_API_URL: ${env:HEARTSONGS_API_URL}
+      OPENAI_API_KEY: ${env:OPENAI_API_KEY}
 
   cleanup-bot:
     handler: lambda/cleanup/handler.handler
     timeout: 30
     events:
       - schedule: rate(1 hour) # Clean up orphaned bots
+    environment:
+      HEARTSONGS_API_URL: ${env:HEARTSONGS_API_URL}
+      OPENAI_API_KEY: ${env:OPENAI_API_KEY}
 
 plugins:
   - serverless-offline
@@ -54,4 +76,3 @@ package:
     - .git/**
     - README.md
     - .env*
-    - test/**
