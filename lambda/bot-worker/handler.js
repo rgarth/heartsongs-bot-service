@@ -18,6 +18,16 @@ class BotWorker {
     this.gameState = null;
     this.hasSubmitted = false;
     this.hasVoted = false;
+    
+    // Debug environment variables
+    console.log(`Bot ${this.botName} Environment Check:`);
+    console.log(`- HEARTSONGS_API_URL: ${this.apiUrl ? 'SET' : 'MISSING'}`);
+    console.log(`- OPENAI_API_KEY: ${this.openaiApiKey ? 'SET (' + this.openaiApiKey.length + ' chars)' : 'MISSING'}`);
+    console.log(`- Available env vars: ${Object.keys(process.env).filter(k => !k.startsWith('AWS')).join(', ')}`);
+    
+    if (this.openaiApiKey) {
+      console.log(`- OpenAI key preview: ${this.openaiApiKey.substring(0, 7)}...${this.openaiApiKey.substring(this.openaiApiKey.length - 4)}`);
+    }
   }
 
   async getGameState() {
@@ -120,10 +130,11 @@ class BotWorker {
   async chooseSongForQuestion(question) {
     try {
       console.log(`Bot ${this.botName} thinking about: "${question.text}"`);
+      console.log(`Bot ${this.botName} personality: ${this.personality}`);
       
       // Step 1: Use AI to analyze the question and suggest songs
       const aiSuggestions = await this.getAISongSuggestions(question.text);
-      console.log(`Bot ${this.botName} AI suggestions:`, aiSuggestions);
+      console.log(`Bot ${this.botName} received ${aiSuggestions?.length || 0} AI suggestions:`, aiSuggestions);
       
       if (!aiSuggestions || aiSuggestions.length === 0) {
         console.log(`Bot ${this.botName} got no AI suggestions, will pass`);
@@ -131,33 +142,51 @@ class BotWorker {
       }
       
       // Step 2: Try to find each suggested song in the music database
-      for (const suggestion of aiSuggestions) {
-        console.log(`Bot ${this.botName} searching for: "${suggestion.artist} - ${suggestion.song}"`);
+      for (let i = 0; i < aiSuggestions.length; i++) {
+        const suggestion = aiSuggestions[i];
+        console.log(`Bot ${this.botName} trying suggestion ${i + 1}/${aiSuggestions.length}: "${suggestion.artist} - ${suggestion.song}"`);
+        console.log(`Bot ${this.botName} AI reasoning: ${suggestion.reasoning}`);
         
         // Search for the specific song
         const searchQuery = `${suggestion.artist} ${suggestion.song}`;
+        console.log(`Bot ${this.botName} searching with query: "${searchQuery}"`);
+        
         const searchResults = await this.searchSongs(searchQuery);
+        console.log(`Bot ${this.botName} got ${searchResults.length} search results`);
         
         if (searchResults.length > 0) {
+          // Log all search results for debugging
+          console.log(`Bot ${this.botName} search results:`);
+          searchResults.forEach((result, idx) => {
+            console.log(`  ${idx + 1}. "${result.name}" by ${result.artist}`);
+          });
+          
           // Find the best match for this specific suggestion
           const bestMatch = this.findBestMatch(searchResults, suggestion);
+          console.log(`Bot ${this.botName} best match: "${bestMatch.name}" by ${bestMatch.artist}`);
           
           if (this.isGoodMatch(bestMatch, suggestion)) {
-            console.log(`Bot ${this.botName} selected: "${bestMatch.name}" by ${bestMatch.artist}`);
-            console.log(`Bot ${this.botName} AI reasoning: ${suggestion.reasoning}`);
+            console.log(`Bot ${this.botName} ✅ SELECTED: "${bestMatch.name}" by ${bestMatch.artist}`);
+            console.log(`Bot ${this.botName} ✅ Original AI suggestion: "${suggestion.artist} - ${suggestion.song}"`);
+            console.log(`Bot ${this.botName} ✅ AI reasoning: ${suggestion.reasoning}`);
             return bestMatch;
+          } else {
+            console.log(`Bot ${this.botName} ❌ Match not good enough, trying next suggestion...`);
           }
+        } else {
+          console.log(`Bot ${this.botName} ❌ No search results for "${searchQuery}", trying next suggestion...`);
         }
         
         // Small delay between searches
         await new Promise(resolve => setTimeout(resolve, 500));
       }
       
-      console.log(`Bot ${this.botName} couldn't find any of the AI suggestions, will pass`);
+      console.log(`Bot ${this.botName} ❌ Couldn't find any of the AI suggestions in the database, will pass`);
       return null;
       
     } catch (error) {
-      console.error('AI song selection failed:', error.message);
+      console.error(`Bot ${this.botName} AI song selection failed:`, error.message);
+      console.error(`Bot ${this.botName} Full error:`, error);
       return null;
     }
   }
@@ -166,13 +195,20 @@ class BotWorker {
    * Get song suggestions from OpenAI based on the question
    */
   async getAISongSuggestions(questionText) {
+    console.log(`Bot ${this.botName} starting AI suggestion process...`);
+    console.log(`OpenAI API Key available: ${!!this.openaiApiKey}`);
+    console.log(`OpenAI API Key length: ${this.openaiApiKey?.length || 0}`);
+    console.log(`OpenAI API Key preview: ${this.openaiApiKey ? this.openaiApiKey.substring(0, 7) + '...' : 'none'}`);
+    
     if (!this.openaiApiKey) {
-      console.warn('OpenAI API key not available, using fallback logic');
+      console.warn(`Bot ${this.botName}: OpenAI API key not available, using fallback logic`);
       return this.getFallbackSuggestions(questionText);
     }
 
     try {
       const personalityPrompt = this.getPersonalityPrompt();
+      console.log(`Bot ${this.botName}: Using personality: ${this.personality}`);
+      console.log(`Bot ${this.botName}: Personality prompt: ${personalityPrompt.substring(0, 100)}...`);
       
       const prompt = `${personalityPrompt}
 
@@ -200,6 +236,9 @@ Format your response as JSON:
   ]
 }`;
 
+      console.log(`Bot ${this.botName}: Making OpenAI API call...`);
+      console.log(`Bot ${this.botName}: Full prompt length: ${prompt.length}`);
+
       const response = await axios.post('https://api.openai.com/v1/chat/completions', {
         model: 'gpt-3.5-turbo',
         messages: [
@@ -219,28 +258,68 @@ Format your response as JSON:
           'Authorization': `Bearer ${this.openaiApiKey}`,
           'Content-Type': 'application/json'
         },
-        timeout: 10000
+        timeout: 15000 // Increased timeout
       });
 
+      console.log(`Bot ${this.botName}: OpenAI API call successful!`);
+      console.log(`Bot ${this.botName}: Response status: ${response.status}`);
+      console.log(`Bot ${this.botName}: Response usage:`, response.data.usage);
+
       const aiResponse = response.data.choices[0].message.content;
-      console.log(`Bot ${this.botName} raw AI response:`, aiResponse);
+      console.log(`Bot ${this.botName}: Raw AI response:`, aiResponse);
       
       // Parse the JSON response
       try {
         const parsed = JSON.parse(aiResponse);
-        return parsed.suggestions || [];
+        console.log(`Bot ${this.botName}: Successfully parsed AI response:`, parsed);
+        
+        if (parsed.suggestions && Array.isArray(parsed.suggestions) && parsed.suggestions.length > 0) {
+          console.log(`Bot ${this.botName}: Got ${parsed.suggestions.length} AI suggestions`);
+          return parsed.suggestions;
+        } else {
+          console.warn(`Bot ${this.botName}: AI response missing suggestions array, falling back`);
+          return this.getFallbackSuggestions(questionText);
+        }
       } catch (parseError) {
-        console.error('Failed to parse AI response as JSON:', parseError);
+        console.error(`Bot ${this.botName}: Failed to parse AI response as JSON:`, parseError);
+        console.log(`Bot ${this.botName}: Attempting to extract from malformed response...`);
+        
         // Try to extract suggestions from malformed response
-        return this.extractSuggestionsFromText(aiResponse);
+        const extracted = this.extractSuggestionsFromText(aiResponse);
+        if (extracted.length > 0) {
+          console.log(`Bot ${this.botName}: Successfully extracted ${extracted.length} suggestions from text`);
+          return extracted;
+        }
+        
+        console.warn(`Bot ${this.botName}: Could not extract suggestions, using fallback`);
+        return this.getFallbackSuggestions(questionText);
       }
       
     } catch (error) {
-      console.error('OpenAI API error:', error.message);
+      console.error(`Bot ${this.botName}: OpenAI API error:`, error.message);
+      
       if (error.response) {
-        console.error('OpenAI API response:', error.response.data);
+        console.error(`Bot ${this.botName}: OpenAI API response status:`, error.response.status);
+        console.error(`Bot ${this.botName}: OpenAI API response data:`, error.response.data);
+        
+        // Check for specific error types
+        if (error.response.status === 401) {
+          console.error(`Bot ${this.botName}: OpenAI API authentication failed - check API key`);
+        } else if (error.response.status === 429) {
+          console.error(`Bot ${this.botName}: OpenAI API rate limit exceeded`);
+        } else if (error.response.status >= 500) {
+          console.error(`Bot ${this.botName}: OpenAI API server error`);
+        }
+      } else if (error.code === 'ECONNREFUSED') {
+        console.error(`Bot ${this.botName}: Could not connect to OpenAI API`);
+      } else if (error.code === 'ENOTFOUND') {
+        console.error(`Bot ${this.botName}: OpenAI API hostname not found`);
+      } else if (error.code === 'ETIMEDOUT') {
+        console.error(`Bot ${this.botName}: OpenAI API request timed out`);
       }
+      
       // Fallback to basic logic
+      console.log(`Bot ${this.botName}: Using fallback suggestions due to API error`);
       return this.getFallbackSuggestions(questionText);
     }
   }

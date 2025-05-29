@@ -3,13 +3,15 @@
   "version": "1.0.0",
   "description": "AI Bot Service for Heart Songs Game",
   "main": "index.js",
-"scripts": {
+  "scripts": {
     "deploy:dev": "serverless deploy --stage dev",
     "deploy:prod": "serverless deploy --stage production", 
     "test": "node test/test-bot-service.js",
     "test:registration": "node test/test-registration.js",
     "test:cleanup": "node test/test-cleanup.js",
     "test:debug": "node test/debug-test.js",
+    "test:openai": "node test/test-openai-bot.js",
+    "test:openai:quick": "node test/test-openai-bot.js --quick",
     "invoke:cleanup": "aws lambda invoke --function-name heartsongs-bot-service-dev-cleanup-bot response.json && cat response.json",
     "logs:cleanup": "serverless logs -f cleanup-bot --stage dev",
     "logs:spawn": "serverless logs -f spawn-bot --stage dev",
