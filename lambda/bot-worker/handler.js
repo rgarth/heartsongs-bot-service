@@ -126,68 +126,54 @@ class BotWorker {
   }
 
   /**
-   * AI-powered song selection using OpenAI
-   */
+  * Enhanced song selection that avoids duplicates
+  */
   async chooseSongForQuestion(question) {
     try {
       console.log(`Bot ${this.botName} thinking about: "${question.text}"`);
-      console.log(`Bot ${this.botName} personality: ${this.personality}`);
-      
-      // Step 1: Use AI to analyze the question and suggest songs
+        
+      // Get AI suggestions
       const aiSuggestions = await this.getAISongSuggestions(question.text);
-      console.log(`Bot ${this.botName} received ${aiSuggestions?.length || 0} AI suggestions:`, aiSuggestions);
-      
+        
       if (!aiSuggestions || aiSuggestions.length === 0) {
-        console.log(`Bot ${this.botName} got no AI suggestions, will pass`);
+       console.log(`Bot ${this.botName} got no AI suggestions, will pass`);
         return null;
       }
-      
-      // Step 2: Try to find each suggested song in the music database
+        
+      // Try each suggestion, skipping duplicates
       for (let i = 0; i < aiSuggestions.length; i++) {
-        const suggestion = aiSuggestions[i];
-        console.log(`Bot ${this.botName} trying suggestion ${i + 1}/${aiSuggestions.length}: "${suggestion.artist} - ${suggestion.song}"`);
-        console.log(`Bot ${this.botName} AI reasoning: ${suggestion.reasoning}`);
+      const suggestion = aiSuggestions[i];
+      console.log(`Bot ${this.botName} trying suggestion ${i + 1}/${aiSuggestions.length}: "${suggestion.artist} - ${suggestion.song}"`);
         
-        // Search for the specific song
-        const searchQuery = `${suggestion.artist} ${suggestion.song}`;
-        console.log(`Bot ${this.botName} searching with query: "${searchQuery}"`);
+      const searchResults = await this.searchSongs(`${suggestion.artist} ${suggestion.song}`);
         
-        const searchResults = await this.searchSongs(searchQuery);
-        console.log(`Bot ${this.botName} got ${searchResults.length} search results`);
-        
-        if (searchResults.length > 0) {
-          // Log all search results for debugging
-          console.log(`Bot ${this.botName} search results:`);
-          searchResults.forEach((result, idx) => {
-            console.log(`  ${idx + 1}. "${result.name}" by ${result.artist}`);
-          });
-          
-          // Find the best match for this specific suggestion
-          const bestMatch = this.findBestMatch(searchResults, suggestion);
-          console.log(`Bot ${this.botName} best match: "${bestMatch.name}" by ${bestMatch.artist}`);
-          
+      if (searchResults.length > 0) {
+        // Try each search result until we find one that's not a duplicate
+        for (const result of searchResults) {
+          const bestMatch = this.findBestMatch([result], suggestion);
+            
           if (this.isGoodMatch(bestMatch, suggestion)) {
+            // Check if this song has already been submitted
+            if (this.isSongAlreadySubmitted(bestMatch)) {
+              console.log(`Bot ${this.botName} ⚠️ Song already submitted by another player: "${bestMatch.name}" by ${bestMatch.artist}`);
+              continue; // Try next search result
+            }
+                
             console.log(`Bot ${this.botName} ✅ SELECTED: "${bestMatch.name}" by ${bestMatch.artist}`);
-            console.log(`Bot ${this.botName} ✅ Original AI suggestion: "${suggestion.artist} - ${suggestion.song}"`);
-            console.log(`Bot ${this.botName} ✅ AI reasoning: ${suggestion.reasoning}`);
             return bestMatch;
-          } else {
-            console.log(`Bot ${this.botName} ❌ Match not good enough, trying next suggestion...`);
           }
-        } else {
-          console.log(`Bot ${this.botName} ❌ No search results for "${searchQuery}", trying next suggestion...`);
         }
-        
-        // Small delay between searches
-        await new Promise(resolve => setTimeout(resolve, 500));
       }
-      
-      console.log(`Bot ${this.botName} ❌ Couldn't find any of the AI suggestions in the database, will pass`);
-      return null;
-      
+        
+      // Small delay between suggestions
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+        
+    console.log(`Bot ${this.botName} ❌ All AI suggestions were either unavailable or already submitted, will pass`);
+    return null;
+        
     } catch (error) {
       console.error(`Bot ${this.botName} AI song selection failed:`, error.message);
-      console.error(`Bot ${this.botName} Full error:`, error);
       return null;
     }
   }
@@ -543,8 +529,22 @@ Format your response as JSON:
     return clean1.includes(clean2) || clean2.includes(clean1);
   }
 
+  /**
+  * Enhanced submission with duplicate handling
+  */
   async submitSong(song) {
     try {
+      // Double-check for duplicates right before submission
+      // (in case another player submitted while we were processing)
+      await this.getGameState(); // Refresh game state
+    
+      if (this.isSongAlreadySubmitted(song)) {
+        console.log(`Bot ${this.botName} ⚠️ Song became duplicate during processing: "${song.name}" by ${song.artist}`);
+        console.log(`Bot ${this.botName} will pass instead`);
+        await this.passTurn();
+       return;
+      }
+    
       await axios.post(`${this.apiUrl}/game/submit`, {
         gameId: this.gameId,
         userId: this.botId,
@@ -556,10 +556,19 @@ Format your response as JSON:
       }, {
         headers: { Authorization: `Bearer ${this.sessionToken}` }
       });
-      
-      console.log(`Bot ${this.botName} submitted: "${song.name}" by ${song.artist}`);
+    
+      console.log(`Bot ${this.botName} ✅ submitted: "${song.name}" by ${song.artist}`);
+    
     } catch (error) {
-      console.error('Failed to submit song:', error.message);
+      console.error(`Bot ${this.botName} failed to submit song:`, error.message);
+    
+      // If submission failed, it might be due to a duplicate
+      // The server should handle this, but we can add a fallback
+      if (error.response?.data?.message?.includes('duplicate') || 
+        error.response?.data?.message?.includes('already selected')) {
+        console.log(`Bot ${this.botName} submission rejected as duplicate, will pass`);
+        await this.passTurn();
+      }
     }
   }
 
@@ -917,6 +926,31 @@ Format your response as JSON:
     const questions = personalityQuestions[this.personality] || personalityQuestions.eclectic;
     return questions[Math.floor(Math.random() * questions.length)];
   }
+
+ /**
+ * Check if a song has already been submitted by another player
+ */
+isSongAlreadySubmitted(song) {
+  if (!this.gameState.submissions) return false;
+  
+  return this.gameState.submissions.some(submission => {
+    // Don't check against our own submissions
+    if (submission.player._id === this.botId) return false;
+    
+    // Check for exact match on song ID (most reliable)
+    if (submission.songId && song.id && submission.songId === song.id) {
+      return true;
+    }
+    
+    // Check for approximate match on name and artist
+    const submittedName = submission.songName?.toLowerCase().trim();
+    const submittedArtist = submission.artist?.toLowerCase().trim();
+    const songName = song.name?.toLowerCase().trim();
+    const songArtist = song.artist?.toLowerCase().trim();
+    
+    return submittedName === songName && submittedArtist === songArtist;
+  });
+}
 
   /**
    * Submit the selected question to the game
