@@ -1,10 +1,52 @@
+// heartsongs-bot-service/lambda/spawn-bot/handler.js
+const AWS = require('aws-sdk');
+const axios = require('axios');
+
+const lambda = new AWS.Lambda();
+
+// Bot personality configurations
+const PERSONALITIES = {
+  eclectic: {
+    name: 'Eclectic Explorer',
+    description: 'Loves discovering hidden gems across all genres',
+    votingStyle: 'creative',
+    temperature: 0.8
+  },
+  mainstream: {
+    name: 'Chart Topper',
+    description: 'Knows all the hits and crowd favorites',
+    votingStyle: 'popular',
+    temperature: 0.4
+  },
+  indie: {
+    name: 'Indie Insider',
+    description: 'Champions underground and alternative artists',
+    votingStyle: 'authentic',
+    temperature: 0.9
+  },
+  vintage: {
+    name: 'Time Traveler',
+    description: 'Expert in classic tracks from decades past',
+    votingStyle: 'nostalgic',
+    temperature: 0.6
+  },
+  analytical: {
+    name: 'Music Scholar',
+    description: 'Makes decisions based on musical theory and lyrics',
+    votingStyle: 'intellectual',
+    temperature: 0.3
+  }
+};
+
 exports.handler = async (event, context) => {
   try {
     console.log('Spawn bot request:', JSON.stringify(event, null, 2));
     console.log('Environment variables check:', {
       hasHeartsOngsApiUrl: !!process.env.HEARTSONGS_API_URL,
       heartsOngsApiUrl: process.env.HEARTSONGS_API_URL,
-      hasOpenAiKey: !!process.env.OPENAI_API_KEY
+      hasOpenAiKey: !!process.env.OPENAI_API_KEY,
+      serviceName: process.env.SERVICE_NAME,
+      stage: process.env.STAGE
     });
     
     // Check if required environment variables are set
@@ -18,7 +60,8 @@ exports.handler = async (event, context) => {
         },
         body: JSON.stringify({ 
           error: 'Server configuration error',
-          details: 'HEARTSONGS_API_URL not configured'
+          details: 'HEARTSONGS_API_URL not configured',
+          availableEnvVars: Object.keys(process.env).filter(key => !key.includes('AWS'))
         })
       };
     }
@@ -28,12 +71,16 @@ exports.handler = async (event, context) => {
     if (!gameCode) {
       return {
         statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        },
         body: JSON.stringify({ error: 'Game code is required' })
       };
     }
 
     const botConfig = PERSONALITIES[personality] || PERSONALITIES.eclectic;
+    console.log(`Using bot personality: ${botConfig.name}`);
     
     // Generate bot username
     const musicWords = [
@@ -59,7 +106,7 @@ exports.handler = async (event, context) => {
       });
       
       const { user: botUser, sessionToken } = registrationResponse.data;
-      console.log(`Bot registered successfully: ${botUser.displayName}`);
+      console.log(`Bot registered successfully: ${botUser.displayName} (ID: ${botUser.id})`);
       
       // Join the game
       console.log(`Bot joining game: ${gameCode}`);
@@ -72,7 +119,7 @@ exports.handler = async (event, context) => {
         timeout: 10000
       });
       
-      console.log('Bot joined game successfully');
+      console.log('Bot joined game successfully:', joinResponse.data);
       
       // Start the bot worker function
       const workerPayload = {
@@ -85,6 +132,8 @@ exports.handler = async (event, context) => {
         personalityConfig: botConfig
       };
       
+      console.log('Starting bot worker with payload:', workerPayload);
+      
       // Invoke bot worker asynchronously
       await lambda.invoke({
         FunctionName: `${process.env.SERVICE_NAME}-${process.env.STAGE}-bot-worker`,
@@ -92,7 +141,7 @@ exports.handler = async (event, context) => {
         Payload: JSON.stringify(workerPayload)
       }).promise();
       
-      console.log('Bot worker started');
+      console.log('Bot worker started successfully');
       
       return {
         statusCode: 200,
@@ -146,6 +195,22 @@ exports.handler = async (event, context) => {
           body: JSON.stringify({
             error: 'Heart Songs API endpoint not found',
             details: `404 error from ${apiError.config?.url}`,
+            apiUrl: process.env.HEARTSONGS_API_URL,
+            suggestion: 'Check if the API endpoint exists and is accessible'
+          })
+        };
+      }
+      
+      if (apiError.response?.status === 400) {
+        return {
+          statusCode: 500,
+          headers: { 
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          },
+          body: JSON.stringify({
+            error: 'Bad request to Heart Songs API',
+            details: apiError.response?.data || apiError.message,
             apiUrl: process.env.HEARTSONGS_API_URL
           })
         };
