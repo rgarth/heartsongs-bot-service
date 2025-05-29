@@ -52,6 +52,9 @@ class BotWorker {
       case 'results':
         await this.handleResults();
         break;
+      case 'question-selection':
+        await this.handleQuestionSelection();
+        break;
       case 'ended':
         console.log(`Game ended. Bot ${this.botName} final score: ${this.getBotScore()}`);
         return false; // End processing
@@ -584,6 +587,262 @@ Format your response as JSON:
   async handleResults() {
     // Just observe and wait
     console.log(`Bot ${this.botName} observing results...`);
+  }
+
+  /**
+   * Handle question selection phase when bot wins
+   */
+  async handleQuestionSelection() {
+    // Check if this bot is the winner who should select the question
+    const isWinner = this.isBotTheWinner();
+    
+    if (!isWinner) {
+      console.log(`Bot ${this.botName} is waiting for the winner to choose a question...`);
+      return;
+    }
+
+    // Check if we've already selected a question
+    if (this.gameState.winnerSelectedQuestion && this.gameState.winnerSelectedQuestion.text) {
+      console.log(`Bot ${this.botName} has already selected a question, waiting for host to start...`);
+      return;
+    }
+
+    console.log(`Bot ${this.botName} won the round and needs to choose the next question!`);
+
+    try {
+      // Give the bot some time to "think" before selecting
+      const thinkingDelay = 3000 + Math.random() * 5000; // 3-8 seconds
+      
+      setTimeout(async () => {
+        await this.selectWinnerQuestion();
+      }, thinkingDelay);
+      
+    } catch (error) {
+      console.error(`Bot ${this.botName} failed to handle question selection:`, error.message);
+    }
+  }
+
+  /**
+   * Check if this bot is the winner of the last round
+   */
+  isBotTheWinner() {
+    if (!this.gameState.submissions || this.gameState.submissions.length === 0) {
+      return false;
+    }
+
+    // Filter out passed submissions
+    const actualSubmissions = this.gameState.submissions.filter(s => !s.hasPassed);
+    
+    if (actualSubmissions.length === 0) {
+      return false; // No winner if everyone passed
+    }
+
+    // Sort by votes, then by submission time (speed bonus consideration)
+    const sortedSubmissions = [...actualSubmissions].sort((a, b) => {
+      const voteDiff = (b.votes?.length || 0) - (a.votes?.length || 0);
+      if (voteDiff !== 0) return voteDiff;
+      return new Date(a.submittedAt) - new Date(b.submittedAt);
+    });
+
+    const winnerSubmission = sortedSubmissions[0];
+    const winnerId = winnerSubmission.player._id || winnerSubmission.player;
+    
+    const isWinner = winnerId.toString() === this.botId.toString();
+    
+    if (isWinner) {
+      console.log(`Bot ${this.botName} is the winner! Winning song: "${winnerSubmission.songName}" by ${winnerSubmission.artist}`);
+    }
+    
+    return isWinner;
+  }
+
+  /**
+   * AI-powered question selection for the next round
+   */
+  async selectWinnerQuestion() {
+    try {
+      console.log(`Bot ${this.botName} is thinking of a good question for the next round...`);
+      
+      // Use AI to generate a creative question
+      const aiQuestion = await this.generateAIQuestion();
+      
+      if (aiQuestion) {
+        await this.submitWinnerQuestion(aiQuestion);
+      } else {
+        // Fallback to personality-based question selection
+        const fallbackQuestion = this.getFallbackQuestion();
+        await this.submitWinnerQuestion(fallbackQuestion);
+      }
+      
+    } catch (error) {
+      console.error(`Bot ${this.botName} failed to select winner question:`, error.message);
+      
+      // Emergency fallback
+      const emergencyQuestion = {
+        text: "What song always makes you smile?",
+        category: "emotion"
+      };
+      await this.submitWinnerQuestion(emergencyQuestion);
+    }
+  }
+
+  /**
+   * Generate a creative question using AI
+   */
+  async generateAIQuestion() {
+    if (!this.openaiApiKey) {
+      console.warn('OpenAI API key not available for question generation');
+      return null;
+    }
+
+    try {
+      const personalityPrompt = this.getQuestionPersonalityPrompt();
+      
+      const prompt = `${personalityPrompt}
+
+You just won a music game round and get to choose the next question for all players to answer.
+
+Create 1 creative, engaging music question that:
+- Is fun and interesting to answer
+- Will generate diverse song choices from different players
+- Fits your personality as described above
+- Is not too specific (avoid naming exact artists unless that's the point)
+- Is clear and easy to understand
+
+Examples of good questions:
+- "What song would you play during a thunderstorm?"
+- "What's your favorite song that nobody else seems to know?"
+- "What song makes you feel like a main character?"
+
+Format your response as JSON:
+{
+  "question": {
+    "text": "Your question here",
+    "category": "emotion|time|event|activity|personal|fun|genre|etc"
+  },
+  "reasoning": "Why you chose this question (1-2 sentences)"
+}`;
+
+      const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a creative music enthusiast choosing an engaging question for a music game. Always respond with valid JSON in the exact format requested.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 300,
+        temperature: 0.8 // Higher creativity for question generation
+      }, {
+        headers: {
+          'Authorization': `Bearer ${this.openaiApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      });
+
+      const aiResponse = response.data.choices[0].message.content;
+      console.log(`Bot ${this.botName} raw AI question response:`, aiResponse);
+      
+      // Parse the JSON response
+      try {
+        const parsed = JSON.parse(aiResponse);
+        if (parsed.question && parsed.question.text) {
+          console.log(`Bot ${this.botName} AI reasoning: ${parsed.reasoning}`);
+          return parsed.question;
+        }
+      } catch (parseError) {
+        console.error('Failed to parse AI question response as JSON:', parseError);
+      }
+      
+      return null;
+      
+    } catch (error) {
+      console.error('OpenAI API error for question generation:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Get personality-specific prompt for question generation
+   */
+  getQuestionPersonalityPrompt() {
+    const prompts = {
+      eclectic: "You are an eclectic music lover who enjoys discovering unique and creative songs. You like questions that encourage people to think outside the box and share hidden gems or unusual tracks.",
+      
+      mainstream: "You are a mainstream music fan who loves popular hits. You like questions that will get people sharing well-known songs that everyone can enjoy and sing along to.",
+      
+      indie: "You are an indie music enthusiast who values authenticity and creativity. You like questions that encourage people to share lesser-known artists or songs with deep meaning.",
+      
+      vintage: "You are a music historian who loves classic tracks. You like questions that might bring up timeless songs from different eras or that have nostalgic value.",
+      
+      analytical: "You are a music scholar who appreciates artistic merit. You like questions that encourage people to think about the deeper aspects of music - lyrics, composition, or cultural impact."
+    };
+    
+    return prompts[this.personality] || prompts.eclectic;
+  }
+
+  /**
+   * Get fallback questions based on personality
+   */
+  getFallbackQuestion() {
+    const personalityQuestions = {
+      eclectic: [
+        { text: "What song would soundtrack your weirdest dream?", category: "creative" },
+        { text: "What song do you love that nobody else seems to know?", category: "personal" },
+        { text: "What song feels like it was made in a different dimension?", category: "creative" }
+      ],
+      mainstream: [
+        { text: "What song gets everyone singing along at parties?", category: "party" },
+        { text: "What's the catchiest song you can't get out of your head?", category: "catchy" },
+        { text: "What song do you hear everywhere but still love?", category: "popular" }
+      ],
+      indie: [
+        { text: "What song feels like a secret only you know?", category: "personal" },
+        { text: "What artist deserves way more recognition?", category: "discovery" },
+        { text: "What song has lyrics that hit different?", category: "meaningful" }
+      ],
+      vintage: [
+        { text: "What song takes you back to a different era?", category: "nostalgia" },
+        { text: "What classic song will never get old?", category: "timeless" },
+        { text: "What song reminds you of your parents' generation?", category: "generational" }
+      ],
+      analytical: [
+        { text: "What song has the most brilliant lyrics?", category: "literary" },
+        { text: "What song shows off incredible musicianship?", category: "technical" },
+        { text: "What song changed how you think about music?", category: "transformative" }
+      ]
+    };
+    
+    const questions = personalityQuestions[this.personality] || personalityQuestions.eclectic;
+    return questions[Math.floor(Math.random() * questions.length)];
+  }
+
+  /**
+   * Submit the selected question to the game
+   */
+  async submitWinnerQuestion(question) {
+    try {
+      console.log(`Bot ${this.botName} selected question: "${question.text}"`);
+      
+      await axios.post(`${this.apiUrl}/game/set-winner-question`, {
+        gameId: this.gameId,
+        questionText: question.text,
+        questionCategory: question.category || 'general'
+      }, {
+        headers: { Authorization: `Bearer ${this.sessionToken}` }
+      });
+      
+      console.log(`Bot ${this.botName} successfully submitted winner question: "${question.text}"`);
+      
+    } catch (error) {
+      console.error(`Bot ${this.botName} failed to submit winner question:`, error.message);
+      throw error;
+    }
   }
 
   getBotScore() {
