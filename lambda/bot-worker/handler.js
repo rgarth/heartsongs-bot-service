@@ -1,4 +1,4 @@
-di// heartsongs-bot-service/lambda/bot-worker/handler.js
+// heartsongs-bot-service/lambda/bot-worker/handler.js
 const axios = require('axios');
 const AWS = require('aws-sdk');
 
