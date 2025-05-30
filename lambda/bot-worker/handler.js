@@ -31,6 +31,45 @@ class BotWorker {
     }
   }
 
+  /**
+   * NEW: Check if this bot is still in the game and should continue
+   * @returns {boolean} True if bot should continue, false if it should terminate
+   */
+  shouldContinueRunning() {
+    if (!this.gameState) return false;
+
+    // Check 1: Is the bot still in the players list?
+    const stillInGame = this.gameState.players.some(p => {
+      const playerId = p.user._id || p.user;
+      return playerId.toString() === this.botId.toString();
+    });
+
+    if (!stillInGame) {
+      console.log(`Bot ${this.botName} is no longer in the game - terminating`);
+      return false;
+    }
+
+    // Check 2: Is the bot marked as removed?
+    if (this.gameState.removedBots) {
+      const isRemoved = this.gameState.removedBots.some(removed => 
+        removed.botId.toString() === this.botId.toString()
+      );
+      
+      if (isRemoved) {
+        console.log(`Bot ${this.botName} has been marked as removed - terminating`);
+        return false;
+      }
+    }
+
+    // Check 3: Has the game ended?
+    if (this.gameState.status === 'ended') {
+      console.log(`Game ended - Bot ${this.botName} terminating`);
+      return false;
+    }
+
+    return true;
+  }
+
   async getGameState() {
     try {
       const response = await axios.get(`${this.apiUrl}/game/${this.gameId}`, {
@@ -46,7 +85,13 @@ class BotWorker {
   }
 
   async processGameState() {
-    if (!this.gameState) return;
+    if (!this.gameState) return false;
+
+    // CRITICAL: Check if bot should continue before processing
+    if (!this.shouldContinueRunning()) {
+      console.log(`Bot ${this.botName} self-terminating due to removal or game end`);
+      return false; // This will exit the main loop
+    }
 
     console.log(`Bot ${this.botName} processing game state: ${this.gameState.status}`);
 
@@ -83,6 +128,12 @@ class BotWorker {
       
       setTimeout(async () => {
         try {
+          // Check again before making API call
+          if (!this.shouldContinueRunning()) {
+            console.log(`Bot ${this.botName} detected removal before setting ready - aborting`);
+            return;
+          }
+
           await axios.post(`${this.apiUrl}/game/ready`, {
             gameId: this.gameId,
             userId: this.botId
@@ -111,6 +162,12 @@ class BotWorker {
       const delay = 4000 + Math.random() * 8000; // 4-12 seconds
       
       setTimeout(async () => {
+        // Check again before submitting
+        if (!this.shouldContinueRunning()) {
+          console.log(`Bot ${this.botName} detected removal before submitting song - aborting`);
+          return;
+        }
+
         if (songChoice) {
           await this.submitSong(songChoice);
         } else {
@@ -129,7 +186,7 @@ class BotWorker {
    * Enhanced chooseSongForQuestion with detailed debugging
    */
   async chooseSongForQuestion(question) {
-  try {
+    try {
       console.log(`🤖 Bot ${this.botName} starting song selection process...`);
       console.log(`🎯 Question: "${question.text}"`);
       console.log(`🎭 Personality: ${this.personality}`);
@@ -140,14 +197,14 @@ class BotWorker {
       const aiSuggestions = await this.getAISongSuggestions(question.text);
       
       console.log(`📋 AI Suggestions Result:`, {
-      received: aiSuggestions !== null,
-      count: aiSuggestions?.length || 0,
-      suggestions: aiSuggestions
+        received: aiSuggestions !== null,
+        count: aiSuggestions?.length || 0,
+        suggestions: aiSuggestions
       });
       
       if (!aiSuggestions || aiSuggestions.length === 0) {
-      console.log(`❌ Bot ${this.botName} got no AI suggestions, will pass`);
-      return null;
+        console.log(`❌ Bot ${this.botName} got no AI suggestions, will pass`);
+        return null;
       }
       
       // Step 2: Randomize order
@@ -159,46 +216,46 @@ class BotWorker {
       console.log(`🔍 Step 3: Searching for songs in database...`);
       
       for (let i = 0; i < shuffledSuggestions.length; i++) {
-      const suggestion = shuffledSuggestions[i];
-      console.log(`\n🎵 Trying suggestion ${i + 1}/${shuffledSuggestions.length}:`);
-      console.log(`   Artist: "${suggestion.artist}"`);
-      console.log(`   Song: "${suggestion.song}"`);
-      console.log(`   Reasoning: "${suggestion.reasoning}"`);
-      
-      // Search for the song
-      const searchQuery = `${suggestion.artist} ${suggestion.song}`;
-      console.log(`🔎 Search query: "${searchQuery}"`);
-      
-      const searchResults = await this.searchSongs(searchQuery);
-      console.log(`📊 Search results: ${searchResults.length} found`);
-      
-      if (searchResults.length === 0) {
+        const suggestion = shuffledSuggestions[i];
+        console.log(`\n🎵 Trying suggestion ${i + 1}/${shuffledSuggestions.length}:`);
+        console.log(`   Artist: "${suggestion.artist}"`);
+        console.log(`   Song: "${suggestion.song}"`);
+        console.log(`   Reasoning: "${suggestion.reasoning}"`);
+        
+        // Search for the song
+        const searchQuery = `${suggestion.artist} ${suggestion.song}`;
+        console.log(`🔎 Search query: "${searchQuery}"`);
+        
+        const searchResults = await this.searchSongs(searchQuery);
+        console.log(`📊 Search results: ${searchResults.length} found`);
+        
+        if (searchResults.length === 0) {
           console.log(`❌ No search results for "${searchQuery}"`);
           continue;
-      }
-      
-      // Log all search results
-      console.log(`📃 All search results:`);
-      searchResults.forEach((result, idx) => {
+        }
+        
+        // Log all search results
+        console.log(`📃 All search results:`);
+        searchResults.forEach((result, idx) => {
           console.log(`   ${idx + 1}. "${result.name}" by ${result.artist} (ID: ${result.id})`);
-      });
-      
-      // Find best match
-      console.log(`🎯 Finding best match...`);
-      const bestMatch = this.findBestMatch(searchResults, suggestion);
-      console.log(`🎯 Best match: "${bestMatch.name}" by ${bestMatch.artist}`);
-      
-      // Check if it's a good match
-      console.log(`✅ Checking if match is good enough...`);
-      const isGood = this.isGoodMatch(bestMatch, suggestion);
-      console.log(`✅ Match quality: ${isGood ? 'GOOD' : 'NOT GOOD ENOUGH'}`);
-      
-      if (isGood) {
+        });
+        
+        // Find best match
+        console.log(`🎯 Finding best match...`);
+        const bestMatch = this.findBestMatch(searchResults, suggestion);
+        console.log(`🎯 Best match: "${bestMatch.name}" by ${bestMatch.artist}`);
+        
+        // Check if it's a good match
+        console.log(`✅ Checking if match is good enough...`);
+        const isGood = this.isGoodMatch(bestMatch, suggestion);
+        console.log(`✅ Match quality: ${isGood ? 'GOOD' : 'NOT GOOD ENOUGH'}`);
+        
+        if (isGood) {
           console.log(`🎉 Bot ${this.botName} SELECTED: "${bestMatch.name}" by ${bestMatch.artist}`);
           console.log(`🎉 From AI suggestion: "${suggestion.artist} - ${suggestion.song}"`);
           console.log(`🎉 AI reasoning: ${suggestion.reasoning}`);
           return bestMatch;
-      } else {
+        } else {
           console.log(`❌ Match "${bestMatch.name}" by ${bestMatch.artist} not good enough for suggestion "${suggestion.artist} - ${suggestion.song}"`);
           
           // Let's see why it failed the match test
@@ -209,109 +266,88 @@ class BotWorker {
           console.log(`   Found song: "${bestMatch.name.toLowerCase()}"`);
           console.log(`   Artist includes check: ${bestMatch.artist.toLowerCase().includes(suggestion.artist.toLowerCase())}`);
           console.log(`   Reverse artist check: ${suggestion.artist.toLowerCase().includes(bestMatch.artist.toLowerCase())}`);
-      }
-      
-      // Small delay between searches
-      await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        
+        // Small delay between searches
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       
       console.log(`❌ Bot ${this.botName} couldn't find any viable songs from AI suggestions, will pass`);
       return null;
       
-  } catch (error) {
+    } catch (error) {
       console.error(`💥 Bot ${this.botName} song selection crashed:`, error.message);
       console.error(`💥 Full error:`, error);
       return null;
-  }
+    }
   }
 
-/**
- * Enhanced song search with debugging
- */
-async searchSongs(query) {
-  try {
-    console.log(`🔍 Searching songs with query: "${query}"`);
-    console.log(`🔗 API URL: ${this.apiUrl}/music/search`);
-    console.log(`🔑 Session token available: ${!!this.sessionToken}`);
-    
-    const response = await axios.get(`${this.apiUrl}/music/search`, {
-      params: { query, limit: 8 },
-      headers: { Authorization: `Bearer ${this.sessionToken}` },
-      timeout: 10000
-    });
-    
-    console.log(`✅ Search API responded with status: ${response.status}`);
-    console.log(`📊 Found ${response.data.length} results`);
-    
-    return response.data;
-  } catch (error) {
-    console.error(`❌ Song search API failed:`, {
-      message: error.message,
-      status: error.response?.status,
-      data: error.response?.data,
-      query: query
-    });
-    return [];
+  /**
+   * Enhanced song search with debugging
+   */
+  async searchSongs(query) {
+    try {
+      console.log(`🔍 Searching songs with query: "${query}"`);
+      console.log(`🔗 API URL: ${this.apiUrl}/music/search`);
+      console.log(`🔑 Session token available: ${!!this.sessionToken}`);
+      
+      const response = await axios.get(`${this.apiUrl}/music/search`, {
+        params: { query, limit: 8 },
+        headers: { Authorization: `Bearer ${this.sessionToken}` },
+        timeout: 10000
+      });
+      
+      console.log(`✅ Search API responded with status: ${response.status}`);
+      console.log(`📊 Found ${response.data.length} results`);
+      
+      return response.data;
+    } catch (error) {
+      console.error(`❌ Song search API failed:`, {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+        query: query
+      });
+      return [];
+    }
   }
-}
 
-/**
- * Enhanced match checking with detailed logging
- */
-isGoodMatch(match, suggestion) {
-  const matchArtist = match.artist.toLowerCase().trim();
-  const targetArtist = suggestion.artist.toLowerCase().trim();
-  const matchSong = match.name.toLowerCase().trim();
-  const targetSong = suggestion.song.toLowerCase().trim();
-  
-  console.log(`🔍 Detailed match analysis:`);
-  console.log(`   Target: "${targetArtist}" - "${targetSong}"`);
-  console.log(`   Found:  "${matchArtist}" - "${matchSong}"`);
-  
-  // Check artist similarity
-  const artistMatch1 = matchArtist.includes(targetArtist);
-  const artistMatch2 = targetArtist.includes(matchArtist);
-  const artistSimilar = this.areArtistsSimilar(matchArtist, targetArtist);
-  
-  console.log(`   Artist checks:`);
-  console.log(`     Found includes target: ${artistMatch1}`);
-  console.log(`     Target includes found: ${artistMatch2}`);
-  console.log(`     Artists similar: ${artistSimilar}`);
-  
-  // Check song similarity (optional - might be too strict)
-  const songMatch1 = matchSong.includes(targetSong);
-  const songMatch2 = targetSong.includes(matchSong);
-  
-  console.log(`   Song checks (for info only):`);
-  console.log(`     Found includes target: ${songMatch1}`);
-  console.log(`     Target includes found: ${songMatch2}`);
-  
-  const isGood = artistMatch1 || artistMatch2 || artistSimilar;
-  console.log(`   Overall match result: ${isGood}`);
-  
-  return isGood;
-}
-
-/**
- * Test the AI suggestions separately
- */
-async testAISuggestions(questionText) {
-  console.log(`🧪 Testing AI suggestions for: "${questionText}"`);
-  
-  if (!this.openaiApiKey) {
-    console.log(`❌ No OpenAI API key available`);
-    return null;
+  /**
+   * Enhanced match checking with detailed logging
+   */
+  isGoodMatch(match, suggestion) {
+    const matchArtist = match.artist.toLowerCase().trim();
+    const targetArtist = suggestion.artist.toLowerCase().trim();
+    const matchSong = match.name.toLowerCase().trim();
+    const targetSong = suggestion.song.toLowerCase().trim();
+    
+    console.log(`🔍 Detailed match analysis:`);
+    console.log(`   Target: "${targetArtist}" - "${targetSong}"`);
+    console.log(`   Found:  "${matchArtist}" - "${matchSong}"`);
+    
+    // Check artist similarity
+    const artistMatch1 = matchArtist.includes(targetArtist);
+    const artistMatch2 = targetArtist.includes(matchArtist);
+    const artistSimilar = this.areArtistsSimilar(matchArtist, targetArtist);
+    
+    console.log(`   Artist checks:`);
+    console.log(`     Found includes target: ${artistMatch1}`);
+    console.log(`     Target includes found: ${artistMatch2}`);
+    console.log(`     Artists similar: ${artistSimilar}`);
+    
+    // Check song similarity (optional - might be too strict)
+    const songMatch1 = matchSong.includes(targetSong);
+    const songMatch2 = targetSong.includes(matchSong);
+    
+    console.log(`   Song checks (for info only):`);
+    console.log(`     Found includes target: ${songMatch1}`);
+    console.log(`     Target includes found: ${songMatch2}`);
+    
+    const isGood = artistMatch1 || artistMatch2 || artistSimilar;
+    console.log(`   Overall match result: ${isGood}`);
+    
+    return isGood;
   }
-  
-  try {
-    const suggestions = await this.getAISongSuggestions(questionText);
-    console.log(`🧪 AI Test Result:`, suggestions);
-    return suggestions;
-  } catch (error) {
-    console.log(`🧪 AI Test Failed:`, error.message);
-    return null;
-  }
-}
 
   /**
    * Get song suggestions from OpenAI based on the question
@@ -578,20 +614,6 @@ Format your response as JSON:
     return suggestions.slice(0, 3); // Max 3 suggestions
   }
 
-  async searchSongs(query) {
-    try {
-      const response = await axios.get(`${this.apiUrl}/music/search`, {
-        params: { query, limit: 8 },
-        headers: { Authorization: `Bearer ${this.sessionToken}` }
-      });
-      
-      return response.data;
-    } catch (error) {
-      console.error('Song search failed:', error.message);
-      return [];
-    }
-  }
-
   /**
    * Find best match between search results and AI suggestion
    */
@@ -638,19 +660,6 @@ Format your response as JSON:
   }
 
   /**
-   * Check if the match is good enough to use
-   */
-  isGoodMatch(match, suggestion) {
-    const matchArtist = match.artist.toLowerCase();
-    const targetArtist = suggestion.artist.toLowerCase();
-    
-    // Must have reasonable artist match
-    return matchArtist.includes(targetArtist) || 
-           targetArtist.includes(matchArtist) ||
-           this.areArtistsSimilar(matchArtist, targetArtist);
-  }
-
-  /**
    * Check if artists are similar (handles common variations)
    */
   areArtistsSimilar(artist1, artist2) {
@@ -662,8 +671,8 @@ Format your response as JSON:
   }
 
   /**
-  * Enhanced submission with duplicate handling
-  */
+   * Enhanced submission with duplicate handling
+   */
   async submitSong(song) {
     try {
       await axios.post(`${this.apiUrl}/game/submit`, {
@@ -812,6 +821,12 @@ Format your response as JSON:
   }
 
   async handleVoting() {
+    // DOUBLE CHECK: Make sure bot is still valid before voting
+    if (!this.shouldContinueRunning()) {
+      console.log(`Bot ${this.botName} detected removal during voting - not voting`);
+      return;
+    }
+
     const hasVoted = this.gameState.submissions.some(s => 
       s.votes.some(v => v._id === this.botId)
     );
@@ -829,6 +844,13 @@ Format your response as JSON:
     
     setTimeout(async () => {
       try {
+        // TRIPLE CHECK: Verify bot is still valid right before making the API call
+        await this.getGameState(); // Refresh game state
+        if (!this.shouldContinueRunning()) {
+          console.log(`Bot ${this.botName} detected removal right before voting - aborting vote`);
+          return;
+        }
+
         // AI-powered voting (or fallback to personality-based voting)
         const choice = await this.chooseVote(votableSubmissions);
         
@@ -842,7 +864,12 @@ Format your response as JSON:
         
         console.log(`Bot ${this.botName} voted for: "${choice.songName}" by ${choice.artist}`);
       } catch (error) {
-        console.error('Failed to vote:', error.message);
+        console.error(`Bot ${this.botName} voting failed:`, error.message);
+        
+        // If voting fails due to bot removal, log it but don't retry
+        if (error.response?.status === 404 || error.response?.status === 403) {
+          console.log(`Bot ${this.botName} vote rejected - likely removed from game`);
+        }
       }
     }, delay);
   }
@@ -934,6 +961,12 @@ Format your response as JSON:
         
       setTimeout(async () => {
         try {
+          // Check again before selecting question
+          if (!this.shouldContinueRunning()) {
+            console.log(`Bot ${this.botName} detected removal before selecting question - aborting`);
+            return;
+          }
+          
           await this.selectWinnerQuestion();
         } catch (error) {
           console.error(`Bot ${this.botName} error during question selection:`, error.message);
@@ -1150,31 +1183,6 @@ Format your response as JSON:
     return questions[Math.floor(Math.random() * questions.length)];
   }
 
- /**
- * Check if a song has already been submitted by another player
- */
-isSongAlreadySubmitted(song) {
-  if (!this.gameState.submissions) return false;
-  
-  return this.gameState.submissions.some(submission => {
-    // Don't check against our own submissions
-    if (submission.player._id === this.botId) return false;
-    
-    // Check for exact match on song ID (most reliable)
-    if (submission.songId && song.id && submission.songId === song.id) {
-      return true;
-    }
-    
-    // Check for approximate match on name and artist
-    const submittedName = submission.songName?.toLowerCase().trim();
-    const submittedArtist = submission.artist?.toLowerCase().trim();
-    const songName = song.name?.toLowerCase().trim();
-    const songArtist = song.artist?.toLowerCase().trim();
-    
-    return submittedName === songName && submittedArtist === songArtist;
-  });
-}
-
   /**
    * Submit the selected question to the game
    */
@@ -1219,7 +1227,7 @@ exports.handler = async (event, context) => {
         const shouldContinue = await bot.processGameState();
         
         if (!shouldContinue) {
-          console.log('Bot finished - game ended');
+          console.log('Bot finished - game ended or bot removed');
           break;
         }
         
