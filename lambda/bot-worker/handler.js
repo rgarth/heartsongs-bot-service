@@ -1,4 +1,4 @@
-// heartsongs-bot-service/lambda/bot-worker/handler.js
+di// heartsongs-bot-service/lambda/bot-worker/handler.js
 const axios = require('axios');
 const AWS = require('aws-sdk');
 
@@ -31,45 +31,6 @@ class BotWorker {
     }
   }
 
-  /**
-   * NEW: Check if this bot is still in the game and should continue
-   * @returns {boolean} True if bot should continue, false if it should terminate
-   */
-  shouldContinueRunning() {
-    if (!this.gameState) return false;
-
-    // Check 1: Is the bot still in the players list?
-    const stillInGame = this.gameState.players.some(p => {
-      const playerId = p.user._id || p.user;
-      return playerId.toString() === this.botId.toString();
-    });
-
-    if (!stillInGame) {
-      console.log(`Bot ${this.botName} is no longer in the game - terminating`);
-      return false;
-    }
-
-    // Check 2: Is the bot marked as removed?
-    if (this.gameState.removedBots) {
-      const isRemoved = this.gameState.removedBots.some(removed => 
-        removed.botId.toString() === this.botId.toString()
-      );
-      
-      if (isRemoved) {
-        console.log(`Bot ${this.botName} has been marked as removed - terminating`);
-        return false;
-      }
-    }
-
-    // Check 3: Has the game ended?
-    if (this.gameState.status === 'ended') {
-      console.log(`Game ended - Bot ${this.botName} terminating`);
-      return false;
-    }
-
-    return true;
-  }
-
   async getGameState() {
     try {
       const response = await axios.get(`${this.apiUrl}/game/${this.gameId}`, {
@@ -85,12 +46,13 @@ class BotWorker {
   }
 
   async processGameState() {
-    if (!this.gameState) return false;
+    if (!this.gameState) return;
 
-    // CRITICAL: Check if bot should continue before processing
-    if (!this.shouldContinueRunning()) {
-      console.log(`Bot ${this.botName} self-terminating due to removal or game end`);
-      return false; // This will exit the main loop
+    // Check if bot is still in the game
+    const botPlayer = this.gameState.players.find(p => p.user._id === this.botId);
+    if (!botPlayer) {
+      console.log(`Bot ${this.botName} is no longer in the game, ending bot worker`);
+      return false; // End processing
     }
 
     console.log(`Bot ${this.botName} processing game state: ${this.gameState.status}`);
@@ -128,12 +90,6 @@ class BotWorker {
       
       setTimeout(async () => {
         try {
-          // Check again before making API call
-          if (!this.shouldContinueRunning()) {
-            console.log(`Bot ${this.botName} detected removal before setting ready - aborting`);
-            return;
-          }
-
           await axios.post(`${this.apiUrl}/game/ready`, {
             gameId: this.gameId,
             userId: this.botId
@@ -162,12 +118,6 @@ class BotWorker {
       const delay = 4000 + Math.random() * 8000; // 4-12 seconds
       
       setTimeout(async () => {
-        // Check again before submitting
-        if (!this.shouldContinueRunning()) {
-          console.log(`Bot ${this.botName} detected removal before submitting song - aborting`);
-          return;
-        }
-
         if (songChoice) {
           await this.submitSong(songChoice);
         } else {
@@ -821,21 +771,32 @@ Format your response as JSON:
   }
 
   async handleVoting() {
-    // DOUBLE CHECK: Make sure bot is still valid before voting
-    if (!this.shouldContinueRunning()) {
-      console.log(`Bot ${this.botName} detected removal during voting - not voting`);
-      return;
-    }
-
     const hasVoted = this.gameState.submissions.some(s => 
       s.votes.some(v => v._id === this.botId)
     );
     
     if (hasVoted) return;
 
-    const votableSubmissions = this.gameState.submissions.filter(s => 
-      !s.hasPassed && s.player._id !== this.botId
-    );
+    // Check if this is a 2-player game (bot can vote for itself)
+    const totalPlayers = this.gameState.activePlayers && this.gameState.activePlayers.length > 0 
+      ? this.gameState.activePlayers.length 
+      : this.gameState.players.length;
+    
+    const canVoteForSelf = totalPlayers < 3;
+    
+    // Filter votable submissions based on game rules
+    const votableSubmissions = this.gameState.submissions.filter(s => {
+      // Skip passed submissions
+      if (s.hasPassed) return false;
+      
+      // In 2-player games, bot can vote for itself
+      // In 3+ player games, bot cannot vote for itself
+      if (s.player._id === this.botId && !canVoteForSelf) {
+        return false;
+      }
+      
+      return true;
+    });
     
     if (votableSubmissions.length === 0) return;
 
@@ -844,14 +805,7 @@ Format your response as JSON:
     
     setTimeout(async () => {
       try {
-        // TRIPLE CHECK: Verify bot is still valid right before making the API call
-        await this.getGameState(); // Refresh game state
-        if (!this.shouldContinueRunning()) {
-          console.log(`Bot ${this.botName} detected removal right before voting - aborting vote`);
-          return;
-        }
-
-        // AI-powered voting (or fallback to personality-based voting)
+        // Enhanced voting choice
         const choice = await this.chooseVote(votableSubmissions);
         
         await axios.post(`${this.apiUrl}/game/vote`, {
@@ -864,43 +818,143 @@ Format your response as JSON:
         
         console.log(`Bot ${this.botName} voted for: "${choice.songName}" by ${choice.artist}`);
       } catch (error) {
-        console.error(`Bot ${this.botName} voting failed:`, error.message);
-        
-        // If voting fails due to bot removal, log it but don't retry
-        if (error.response?.status === 404 || error.response?.status === 403) {
-          console.log(`Bot ${this.botName} vote rejected - likely removed from game`);
-        }
+        console.error('Failed to vote:', error.message);
       }
     }, delay);
   }
 
   /**
-   * AI-powered voting decision
+   * Enhanced voting logic with AI analysis and 2-player fix
    */
   async chooseVote(submissions) {
-    // For now, use personality-based voting
-    // You could extend this to use AI for more sophisticated voting
+    // Check if bot's own submission is in the list (2-player game)
+    const botSubmission = submissions.find(s => s.player._id === this.botId);
+    const otherSubmissions = submissions.filter(s => s.player._id !== this.botId);
     
+    // In 2-player games, handle self-voting strategy first
+    if (botSubmission && otherSubmissions.length === 1) {
+      const shouldVoteForSelf = Math.random() < 0.3;
+      if (shouldVoteForSelf) {
+        console.log(`Bot ${this.botName} is voting for its own submission (2-player strategy)`);
+        return botSubmission;
+      }
+    }
+    
+    // Try AI-powered voting if OpenAI is available
+    if (this.openaiApiKey && this.gameState.currentQuestion) {
+      try {
+        const aiChoice = await this.getAIVotingChoice(submissions);
+        if (aiChoice) {
+          console.log(`Bot ${this.botName} used AI analysis for voting`);
+          return aiChoice;
+        }
+      } catch (error) {
+        console.error(`Bot ${this.botName} AI voting failed, falling back to personality voting:`, error.message);
+      }
+    }
+    
+    // Fallback to existing personality-based voting
+    return this.getPersonalityBasedVote(submissions);
+  }
+
+  /**
+   * Use AI to analyze which submission best answers the question
+   */
+  async getAIVotingChoice(submissions) {
+    if (!this.openaiApiKey || !this.gameState.currentQuestion) {
+      return null;
+    }
+    
+    try {
+      const personalityPrompt = this.getPersonalityPrompt();
+      
+      // Create a description of all submissions
+      const submissionDescriptions = submissions.map((sub, index) => {
+        return `Option ${index + 1}: "${sub.songName}" by ${sub.artist}`;
+      }).join('\n');
+      
+      const prompt = `${personalityPrompt}
+
+Question: "${this.gameState.currentQuestion.text}"
+
+Here are the song submissions to vote on:
+${submissionDescriptions}
+
+Based on your personality and which song best answers the question, which option would you vote for?
+
+Consider:
+- How well each song answers the specific question
+- Your musical preferences as described above
+- The creativity and appropriateness of each choice
+
+Respond with just the option number (1, 2, 3, etc.) and a brief reason why.
+
+Format: Option X - [brief reason]`;
+
+      const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are voting on music submissions in a game. Respond only with the option number and brief reasoning.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 100,
+        temperature: 0.7
+      }, {
+        headers: {
+          'Authorization': `Bearer ${this.openaiApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      });
+
+      const aiResponse = response.data.choices[0].message.content.trim();
+      console.log(`Bot ${this.botName} AI voting reasoning: ${aiResponse}`);
+      
+      // Extract option number from response
+      const optionMatch = aiResponse.match(/option\s*(\d+)/i);
+      if (optionMatch) {
+        const optionIndex = parseInt(optionMatch[1]) - 1;
+        if (optionIndex >= 0 && optionIndex < submissions.length) {
+          const choice = submissions[optionIndex];
+          console.log(`Bot ${this.botName} AI chose: "${choice.songName}" by ${choice.artist}`);
+          return choice;
+        }
+      }
+      
+      console.warn(`Bot ${this.botName} couldn't parse AI voting response: ${aiResponse}`);
+      return null;
+      
+    } catch (error) {
+      console.error(`Bot ${this.botName} AI voting error:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Fallback personality-based voting (existing logic)
+   */
+  getPersonalityBasedVote(submissions) {
     const votingStyles = {
       eclectic: () => {
-        // Prefers unique, lesser-known tracks
         return submissions.find(s => !this.isMainstreamSong(s)) || submissions[0];
       },
       mainstream: () => {
-        // Prefers popular, well-known tracks
         return submissions.find(s => this.isMainstreamSong(s)) || submissions[0];
       },
       indie: () => {
-        // Prefers alternative artists
         return submissions.find(s => this.isIndieArtist(s.artist)) || submissions[0];
       },
       vintage: () => {
-        // Prefers older songs
         return submissions.find(s => this.isVintageSong(s)) || submissions[0];
       },
       analytical: () => {
-        // Prefers songs with complex/meaningful content
-        return submissions[Math.floor(Math.random() * submissions.length)]; // Random for now
+        return submissions[Math.floor(Math.random() * submissions.length)];
       }
     };
     
@@ -961,12 +1015,6 @@ Format your response as JSON:
         
       setTimeout(async () => {
         try {
-          // Check again before selecting question
-          if (!this.shouldContinueRunning()) {
-            console.log(`Bot ${this.botName} detected removal before selecting question - aborting`);
-            return;
-          }
-          
           await this.selectWinnerQuestion();
         } catch (error) {
           console.error(`Bot ${this.botName} error during question selection:`, error.message);
@@ -1227,7 +1275,7 @@ exports.handler = async (event, context) => {
         const shouldContinue = await bot.processGameState();
         
         if (!shouldContinue) {
-          console.log('Bot finished - game ended or bot removed');
+          console.log('Bot finished - game ended');
           break;
         }
         
