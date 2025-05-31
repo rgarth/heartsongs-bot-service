@@ -1,379 +1,224 @@
-// scripts/lambdaCleanup.js - Tools to find and kill zombie Lambda functions
+// scripts/lambdaCleanup.js - IMPROVED VERSION
 const AWS = require('aws-sdk');
 const dotenv = require('dotenv');
 
 // Load environment variables
 dotenv.config();
 
-// Configure AWS SDK
-AWS.config.update({
-  region: process.env.AWS_REGION || 'us-east-1'
-});
+const cloudwatchLogs = new AWS.CloudWatchLogs({ region: process.env.AWS_REGION || 'us-east-1' });
+const lambda = new AWS.Lambda({ region: process.env.AWS_REGION || 'us-east-1' });
 
-const lambda = new AWS.Lambda();
-const cloudWatchLogs = new AWS.CloudWatchLogs();
-
-class LambdaCleanup {
+class ImprovedLambdaCleanup {
   constructor() {
-    this.botWorkerFunctionName = process.env.BOT_WORKER_FUNCTION_NAME || 'heartsongs-bot-worker';
-    console.log(`🤖 Lambda Cleanup Tool initialized`);
-    console.log(`Function name: ${this.botWorkerFunctionName}`);
-    console.log(`AWS Region: ${AWS.config.region}`);
+    this.functionName = process.env.BOT_WORKER_FUNCTION_NAME;
+    this.logGroupName = `/aws/lambda/${this.functionName}`;
+    
+    if (!this.functionName) {
+      throw new Error('BOT_WORKER_FUNCTION_NAME environment variable not set');
+    }
+    
+    console.log('🤖 Improved Lambda Cleanup Tool initialized');
+    console.log(`Function name: ${this.functionName}`);
+    console.log(`AWS Region: ${process.env.AWS_REGION || 'us-east-1'}`);
   }
 
-  /**
-   * Find currently running Lambda executions (via CloudWatch logs)
-   */
-  async findRunningExecutions() {
-    console.log('🔍 Searching for running bot worker executions...\n');
-    console.log(`Looking for function: ${this.botWorkerFunctionName}`);
-    
-    const logGroupName = `/aws/lambda/${this.botWorkerFunctionName}`;
-    console.log(`Log group: ${logGroupName}`);
-    
+  async findActiveBots() {
     try {
-      // Get recent log streams (running executions)
-      const streams = await cloudWatchLogs.describeLogStreams({
-        logGroupName: logGroupName,
-        orderBy: 'LastEventTime',
-        descending: true,
-        limit: 50
-      }).promise();
-
-      console.log(`Found ${streams.logStreams.length} recent log streams`);
+      console.log('🔍 Searching for active bot workers (recent activity method)...');
+      console.log(`Looking for function: ${this.functionName}`);
+      console.log(`Log group: ${this.logGroupName}`);
       
-      const runningExecutions = [];
-      const now = Date.now();
-      const fiveMinutesAgo = now - (5 * 60 * 1000);
-
-      for (const stream of streams.logStreams) {
-        if (stream.lastEventTime && stream.lastEventTime > fiveMinutesAgo) {
-          // Check if this stream shows active execution
-          const events = await cloudWatchLogs.getLogEvents({
-            logGroupName: logGroupName,
+      // Look for activity in last 10 minutes (more generous window)
+      const tenMinutesAgo = Date.now() - (10 * 60 * 1000);
+      
+      const streamsResponse = await cloudwatchLogs.describeLogStreams({
+        logGroupName: this.logGroupName,
+        orderBy: 'LastEventTime', 
+        descending: true,
+        limit: 50 // Check more streams
+      }).promise();
+      
+      console.log(`Found ${streamsResponse.logStreams.length} total log streams`);
+      
+      const recentStreams = streamsResponse.logStreams.filter(stream => 
+        stream.lastEventTime && stream.lastEventTime > tenMinutesAgo
+      );
+      
+      console.log(`📊 Found ${recentStreams.length} streams with activity in last 10 minutes`);
+      
+      if (recentStreams.length === 0) {
+        console.log('✅ No recent bot activity found');
+        return [];
+      }
+      
+      // For each recent stream, extract bot info
+      const activeBots = [];
+      
+      for (const stream of recentStreams.slice(0, 15)) { // Check top 15
+        try {
+          const eventsResponse = await cloudwatchLogs.getLogEvents({
+            logGroupName: this.logGroupName,
             logStreamName: stream.logStreamName,
-            limit: 10,
-            startFromHead: false
+            startTime: tenMinutesAgo,
+            limit: 50
           }).promise();
-
-          // Look for bot activity indicators
-          const hasRecentActivity = events.events.some(event => 
-            event.message.includes('Bot ') && 
-            event.message.includes('processing game state') &&
-            (now - event.timestamp) < (2 * 60 * 1000) // 2 minutes
+          
+          const messages = eventsResponse.events.map(e => e.message);
+          
+          // Look for bot initialization message
+          const botInitMessage = messages.find(msg => 
+            msg.includes('Bot worker started with timeout protection') ||
+            msg.includes('"botName"')
           );
-
-          if (hasRecentActivity) {
-            runningExecutions.push({
-              logStream: stream.logStreamName,
-              lastActivity: new Date(stream.lastEventTime),
-              duration: Math.floor((now - stream.creationTime) / 60000)
-            });
+          
+          if (botInitMessage) {
+            // Extract bot details from init message
+            const botNameMatch = botInitMessage.match(/"botName":\s*"([^"]+)"/);
+            const gameCodeMatch = botInitMessage.match(/"gameCode":\s*"([^"]+)"/);
+            const personalityMatch = botInitMessage.match(/"personality":\s*"([^"]+)"/);
+            
+            if (botNameMatch && gameCodeMatch) {
+              // Check how recent the activity is
+              const lastEventTime = new Date(stream.lastEventTime);
+              const minutesAgo = Math.floor((Date.now() - stream.lastEventTime) / 60000);
+              
+              // Look for signs of ongoing activity vs terminated bot
+              const hasRecentProcessing = messages.some(msg => 
+                msg.includes('processing game state') ||
+                msg.includes('analyzing question') ||
+                msg.includes('submitting') ||
+                msg.includes('voting')
+              );
+              
+              const hasTermination = messages.some(msg =>
+                msg.includes('Bot finished') ||
+                msg.includes('game ended') ||
+                msg.includes('terminating')
+              );
+              
+              activeBots.push({
+                botName: botNameMatch[1],
+                gameCode: gameCodeMatch[1],
+                personality: personalityMatch ? personalityMatch[1] : 'unknown',
+                logStream: stream.logStreamName,
+                lastActivity: lastEventTime,
+                minutesAgo: minutesAgo,
+                hasRecentProcessing: hasRecentProcessing,
+                hasTermination: hasTermination,
+                status: hasTermination ? 'terminated' : (minutesAgo < 5 ? 'active' : 'idle'),
+                recentMessages: messages.slice(-3)
+              });
+            }
           }
+        } catch (error) {
+          // Skip streams we can't read
+          continue;
         }
       }
-
-      if (runningExecutions.length === 0) {
-        console.log('✅ No currently running bot executions found');
-      } else {
-        console.log(`⚠️ Found ${runningExecutions.length} potentially running executions:`);
-        runningExecutions.forEach(exec => {
-          console.log(`   ${exec.logStream}`);
-          console.log(`     Last activity: ${exec.lastActivity.toISOString()}`);
-          console.log(`     Duration: ${exec.duration} minutes\n`);
-        });
-      }
-
-      return runningExecutions;
-
-    } catch (error) {
-      console.error('❌ Error finding running executions:', error.message);
       
+      return activeBots;
+    } catch (error) {
       if (error.code === 'ResourceNotFoundException') {
-        console.log(`📝 Log group ${logGroupName} not found`);
+        console.log(`📝 Log group ${this.logGroupName} not found`);
         console.log('This means either:');
         console.log('  1. No bots have ever run (log group not created yet)');
         console.log('  2. Function name is incorrect');
         console.log('  3. Wrong AWS region');
-        console.log('\n💡 Try running a bot first, or check:');
-        console.log(`   - BOT_WORKER_FUNCTION_NAME=${this.botWorkerFunctionName}`);
-        console.log(`   - AWS_REGION=${AWS.config.region}`);
-        
-        // Let's also check if the function exists
-        await this.checkIfFunctionExists();
-        return [];
-      } else if (error.code === 'UnauthorizedOperation' || error.code === 'AccessDenied') {
-        console.log('🔐 AWS Permission Error:');
-        console.log('Make sure your AWS credentials have CloudWatch Logs permissions');
+        console.log(`💡 Try running a bot first, or check:`);
+        console.log(`   - BOT_WORKER_FUNCTION_NAME=${this.functionName}`);
+        console.log(`   - AWS_REGION=${process.env.AWS_REGION || 'us-east-1'}`);
         return [];
       }
+      
+      console.error('❌ Error finding active bots:', error.message);
       throw error;
     }
   }
 
-  /**
-   * Check if the Lambda function exists
-   */
-  async checkIfFunctionExists() {
+  async findCurrentlyExecuting() {
     try {
-      console.log(`\n🔍 Checking if Lambda function exists...`);
-      const config = await lambda.getFunctionConfiguration({
-        FunctionName: this.botWorkerFunctionName
-      }).promise();
+      console.log('⚡ Also checking for currently executing invocations...');
       
-      console.log(`✅ Function exists: ${config.FunctionName}`);
-      console.log(`   Runtime: ${config.Runtime}`);
-      console.log(`   Last Modified: ${config.LastModified}`);
-      console.log(`\n💡 Function exists but no logs yet. This is normal if no bots have run.`);
+      // This is the old method - check for actual running invocations
+      // This will almost always be empty due to short execution times
       
+      // Note: There's no direct AWS API to list "currently running" Lambda invocations
+      // We can only check metrics or recent invocations
+      
+      console.log('💡 Note: Lambda invocations are very short (seconds), so finding');
+      console.log('   "currently running" executions is nearly impossible.');
+      console.log('   The "recent activity" method above is more reliable.');
+      
+      return [];
     } catch (error) {
-      if (error.code === 'ResourceNotFoundException') {
-        console.log(`❌ Lambda function '${this.botWorkerFunctionName}' does not exist`);
-        console.log('\n💡 Available options:');
-        console.log('   1. Deploy your bot Lambda function first');
-        console.log('   2. Check the function name in AWS Console');
-        console.log('   3. Update BOT_WORKER_FUNCTION_NAME in .env file');
-        
-        // Try to list functions to help user
-        await this.listAvailableFunctions();
-      } else {
-        console.log(`❌ Error checking function: ${error.message}`);
-      }
+      console.error('Error checking current executions:', error);
+      return [];
     }
   }
 
-  /**
-   * List available Lambda functions that might be the bot
-   */
-  async listAvailableFunctions() {
-    try {
-      console.log('\n📋 Looking for available Lambda functions...');
-      const functions = await lambda.listFunctions({ MaxItems: 50 }).promise();
-      
-      const possibleBotFunctions = functions.Functions.filter(f => 
-        f.FunctionName.toLowerCase().includes('bot') || 
-        f.FunctionName.toLowerCase().includes('heart')
-      );
-      
-      if (possibleBotFunctions.length > 0) {
-        console.log('🎯 Found possible bot functions:');
-        possibleBotFunctions.forEach(f => {
-          console.log(`   - ${f.FunctionName} (${f.Runtime})`);
-        });
-        console.log('\n💡 Update your .env file with the correct function name');
-      } else {
-        console.log('❌ No functions found with "bot" or "heart" in the name');
-        console.log('\n📝 All available functions:');
-        functions.Functions.slice(0, 10).forEach(f => {
-          console.log(`   - ${f.FunctionName}`);
-        });
-        if (functions.Functions.length > 10) {
-          console.log(`   ... and ${functions.Functions.length - 10} more`);
-        }
-      }
-      
-    } catch (error) {
-      console.log(`❌ Error listing functions: ${error.message}`);
-    }
-  }
-
-  /**
-   * Get Lambda function metrics
-   */
-  async getLambdaMetrics() {
-    console.log('📊 Getting Lambda function metrics...\n');
-    
-    try {
-      // Get function configuration
-      const config = await lambda.getFunctionConfiguration({
-        FunctionName: this.botWorkerFunctionName
-      }).promise();
-
-      console.log(`Function: ${config.FunctionName}`);
-      console.log(`Runtime: ${config.Runtime}`);
-      console.log(`Timeout: ${config.Timeout} seconds`);
-      console.log(`Memory: ${config.MemorySize} MB`);
-      console.log(`Last Modified: ${config.LastModified}`);
-
-      // Note: Real-time invocation metrics require CloudWatch API
-      console.log('\n📈 For detailed metrics, check AWS CloudWatch console:');
-      console.log(`   - Invocations, Duration, Errors, Throttles`);
-      console.log(`   - Log group: /aws/lambda/${this.botWorkerFunctionName}`);
-
-    } catch (error) {
-      if (error.code === 'ResourceNotFoundException') {
-        console.log(`❌ Lambda function '${this.botWorkerFunctionName}' not found`);
-      } else {
-        throw error;
-      }
-    }
-  }
-
-  /**
-   * Emergency: Update Lambda timeout to kill long-running executions
-   */
-  async emergencyTimeoutUpdate(newTimeout = 60) {
-    console.log(`🚨 EMERGENCY: Updating Lambda timeout to ${newTimeout} seconds...\n`);
-    
-    const confirm = process.argv.includes('--confirm-timeout-update');
-    if (!confirm) {
-      console.log('⚠️ Add --confirm-timeout-update flag to actually update the timeout');
-      console.log('This will kill any currently running executions when they hit the new timeout');
+  displayResults(activeBots) {
+    if (activeBots.length === 0) {
+      console.log('✅ No active bots found in last 10 minutes');
       return;
     }
-
-    try {
-      const result = await lambda.updateFunctionConfiguration({
-        FunctionName: this.botWorkerFunctionName,
-        Timeout: newTimeout
-      }).promise();
-
-      console.log('✅ Lambda timeout updated successfully');
-      console.log(`   New timeout: ${result.Timeout} seconds`);
-      console.log('   Any running executions will be killed when they hit this timeout');
-
-    } catch (error) {
-      console.error('❌ Failed to update Lambda timeout:', error.message);
-    }
-  }
-
-  /**
-   * Clean up old log streams
-   */
-  async cleanupOldLogs(daysOld = 7) {
-    console.log(`🧹 Cleaning up log streams older than ${daysOld} days...\n`);
     
-    try {
-      const logGroupName = `/aws/lambda/${this.botWorkerFunctionName}`;
-      const cutoffTime = Date.now() - (daysOld * 24 * 60 * 60 * 1000);
-
-      let nextToken = null;
-      let deletedCount = 0;
-
-      do {
-        const params = {
-          logGroupName: logGroupName,
-          limit: 50,
-          ...(nextToken && { nextToken })
-        };
-
-        const streams = await cloudWatchLogs.describeLogStreams(params).promise();
-
-        const oldStreams = streams.logStreams.filter(stream => 
-          stream.lastEventTime && stream.lastEventTime < cutoffTime
-        );
-
-        for (const stream of oldStreams) {
-          try {
-            await cloudWatchLogs.deleteLogStream({
-              logGroupName: logGroupName,
-              logStreamName: stream.logStreamName
-            }).promise();
-            
-            deletedCount++;
-            console.log(`   Deleted: ${stream.logStreamName}`);
-          } catch (deleteError) {
-            console.log(`   Failed to delete ${stream.logStreamName}: ${deleteError.message}`);
-          }
-        }
-
-        nextToken = streams.nextToken;
-      } while (nextToken);
-
-      console.log(`\n✅ Cleanup completed: ${deletedCount} old log streams deleted`);
-
-    } catch (error) {
-      if (error.code === 'ResourceNotFoundException') {
-        console.log(`Log group not found - nothing to clean up`);
+    console.log(`\n🤖 Found ${activeBots.length} bot(s) with recent activity:\n`);
+    
+    activeBots.forEach((bot, index) => {
+      console.log(`${index + 1}. ${bot.botName} (${bot.personality})`);
+      console.log(`   Game: ${bot.gameCode}`);
+      console.log(`   Status: ${bot.status.toUpperCase()}`);
+      console.log(`   Last activity: ${bot.minutesAgo} minutes ago`);
+      console.log(`   Log stream: ${bot.logStream}`);
+      
+      if (bot.status === 'active') {
+        console.log(`   🟢 Recently active - likely still in game`);
+      } else if (bot.status === 'terminated') {
+        console.log(`   🔴 Terminated normally`);
       } else {
-        console.error('❌ Log cleanup failed:', error.message);
+        console.log(`   🟡 Idle - may be between game phases`);
       }
-    }
-  }
-
-  /**
-   * Show help
-   */
-  showHelp() {
-    console.log(`
-🤖 Lambda Bot Cleanup Tool
-
-Environment Variables:
-  BOT_WORKER_FUNCTION_NAME - Lambda function name (default: heartsongs-bot-worker)
-  AWS_REGION              - AWS region (default: us-east-1)
-
-Commands:
-  find-running    - Find currently running bot executions
-  metrics        - Show Lambda function metrics  
-  emergency-timeout <seconds> - Update Lambda timeout (requires --confirm-timeout-update)
-  cleanup-logs [days] - Delete log streams older than X days (default: 7)
-
-Examples:
-  node lambdaCleanup.js find-running
-  node lambdaCleanup.js metrics
-  node lambdaCleanup.js emergency-timeout 60 --confirm-timeout-update
-  node lambdaCleanup.js cleanup-logs 3
-
-⚠️ ZOMBIE LAMBDA CLEANUP STRATEGY:
-1. Run 'find-running' to see active executions
-2. For immediate kill: Use 'emergency-timeout 60 --confirm-timeout-update'
-3. For old logs: Use 'cleanup-logs 1' to remove old streams
-4. Monitor with 'metrics' command
-
-Note: There's no direct way to "kill" a running Lambda. The timeout method
-will cause them to be terminated when they hit the new timeout limit.
-    `);
+      
+      console.log('');
+    });
+    
+    // Show summary
+    const activeBotCount = activeBots.filter(b => b.status === 'active').length;
+    const idleBotCount = activeBots.filter(b => b.status === 'idle').length;
+    const terminatedBotCount = activeBots.filter(b => b.status === 'terminated').length;
+    
+    console.log('📊 Summary:');
+    console.log(`   Active: ${activeBotCount}`);
+    console.log(`   Idle: ${idleBotCount}`);
+    console.log(`   Terminated: ${terminatedBotCount}`);
   }
 }
 
-// CLI interface
+// Command line interface
 async function main() {
-  const cleanup = new LambdaCleanup();
-  const command = process.argv[2];
+  const command = process.argv[2] || 'find-running';
   
   try {
+    const cleanup = new ImprovedLambdaCleanup();
+    
     switch (command) {
       case 'find-running':
-        await cleanup.findRunningExecutions();
-        break;
-        
-      case 'metrics':
-        await cleanup.getLambdaMetrics();
-        break;
-        
-      case 'emergency-timeout':
-        const timeout = parseInt(process.argv[3]) || 60;
-        await cleanup.emergencyTimeoutUpdate(timeout);
-        break;
-        
-      case 'cleanup-logs':
-        const days = parseInt(process.argv[3]) || 7;
-        await cleanup.cleanupOldLogs(days);
+      case 'find-active':
+        const activeBots = await cleanup.findActiveBots();
+        await cleanup.findCurrentlyExecuting();
+        cleanup.displayResults(activeBots);
         break;
         
       default:
-        cleanup.showHelp();
+        console.log('Usage: node scripts/lambdaCleanup.js [find-running|find-active]');
         break;
     }
-    
   } catch (error) {
-    console.error('❌ Lambda cleanup failed:', error.message);
-    
-    if (error.code === 'UnauthorizedOperation' || error.code === 'AccessDenied') {
-      console.error('\n🔐 AWS Permission Error:');
-      console.error('Make sure your AWS credentials have the following permissions:');
-      console.error('- lambda:GetFunctionConfiguration');
-      console.error('- lambda:UpdateFunctionConfiguration'); 
-      console.error('- logs:DescribeLogStreams');
-      console.error('- logs:GetLogEvents');
-      console.error('- logs:DeleteLogStream');
-    }
+    console.error('❌ Script failed:', error.message);
+    process.exit(1);
   }
 }
 
-// Run if called directly
 if (require.main === module) {
   main();
 }
-
-module.exports = LambdaCleanup;
