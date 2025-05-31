@@ -19,16 +19,11 @@ class BotWorker {
     this.hasSubmitted = false;
     this.hasVoted = false;
     this._isSelectingQuestion = false;
-    
-    // Debug environment variables
-    console.log(`Bot ${this.botName} Environment Check:`);
-    console.log(`- HEARTSONGS_API_URL: ${this.apiUrl ? 'SET' : 'MISSING'}`);
-    console.log(`- OPENAI_API_KEY: ${this.openaiApiKey ? 'SET (' + this.openaiApiKey.length + ' chars)' : 'MISSING'}`);
-    console.log(`- Available env vars: ${Object.keys(process.env).filter(k => !k.startsWith('AWS')).join(', ')}`);
-    
-    if (this.openaiApiKey) {
-      console.log(`- OpenAI key preview: ${this.openaiApiKey.substring(0, 7)}...${this.openaiApiKey.substring(this.openaiApiKey.length - 4)}`);
-    }
+    this.stateStartTime = Date.now();
+    this.currentState = null;
+    this.MAX_STATE_DURATION = 15 * 60 * 1000; // 15 minutes
+
+    console.log(`Bot ${this.botName} initialized with 15-minute state timeout`);
   }
 
   async getGameState() {
@@ -37,7 +32,16 @@ class BotWorker {
         headers: { Authorization: `Bearer ${this.sessionToken}` }
       });
       
-      this.gameState = response.data;
+      const newGameState = response.data;
+      
+      // NEW: Check if game state changed
+      if (this.currentState !== newGameState.status) {
+        console.log(`Bot ${this.botName}: State changed from ${this.currentState} to ${newGameState.status}`);
+        this.currentState = newGameState.status;
+        this.stateStartTime = Date.now();
+      }
+      
+      this.gameState = newGameState;
       return this.gameState;
     } catch (error) {
       console.error('Failed to get game state:', error.message);
@@ -45,8 +49,27 @@ class BotWorker {
     }
   }
 
+  checkStateTimeout() {
+    const timeInCurrentState = Date.now() - this.stateStartTime;
+    
+    if (timeInCurrentState > this.MAX_STATE_DURATION) {
+      const minutes = Math.floor(timeInCurrentState / 60000);
+      console.log(`⏰ Bot ${this.botName} has been in state '${this.currentState}' for ${minutes} minutes`);
+      console.log(`🚫 Exceeds 15-minute limit - terminating bot worker`);
+      return true;
+    }
+    
+    return false;
+  }
+
   async processGameState() {
     if (!this.gameState) return;
+
+    // NEW: Check state timeout first
+    if (this.checkStateTimeout()) {
+      console.log(`Bot ${this.botName} terminating due to 15-minute state timeout`);
+      return false; // End processing
+    }
 
     // Check if bot is still in the game
     const botPlayer = this.gameState.players.find(p => p.user._id === this.botId);
@@ -1262,7 +1285,7 @@ Format your response as JSON:
 
 exports.handler = async (event, context) => {
   try {
-    console.log('Bot worker started:', JSON.stringify(event, null, 2));
+    console.log('Bot worker started with timeout protection:', JSON.stringify(event, null, 2));
     
     const bot = new BotWorker(event);
     
@@ -1275,14 +1298,14 @@ exports.handler = async (event, context) => {
         const shouldContinue = await bot.processGameState();
         
         if (!shouldContinue) {
-          console.log('Bot finished - game ended');
+          console.log('Bot finished - game ended or timeout reached');
           break;
         }
         
         // Check if we're approaching Lambda timeout
         const elapsedTime = Date.now() - startTime;
         if (elapsedTime > maxRunTime) {
-          console.log('Approaching timeout, re-invoking bot worker...');
+          console.log('Approaching Lambda timeout, re-invoking bot worker...');
           
           // Re-invoke self to continue
           await lambda.invoke({
