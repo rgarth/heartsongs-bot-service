@@ -2,28 +2,47 @@
   "name": "heartsongs-bot-service",
   "version": "1.0.0",
   "description": "AI Bot Service for Heart Songs Game",
-  "main": "index.js",
+  "main": "lambda/bot-worker/handler.js",
   "scripts": {
-    "deploy:dev": "serverless deploy --stage dev",
-    "deploy:prod": "serverless deploy --stage production", 
-    "test": "node test/test-bot-service.js",
-    "test:registration": "node test/test-registration.js",
-    "test:cleanup": "node test/test-cleanup.js",
-    "test:debug": "node test/debug-test.js",
-    "test:openai": "node test/test-openai-bot.js",
-    "test:openai:quick": "node test/test-openai-bot.js --quick",
-    "invoke:cleanup": "aws lambda invoke --function-name heartsongs-bot-service-dev-cleanup-bot response.json && cat response.json",
-    "logs:cleanup": "serverless logs -f cleanup-bot --stage dev",
-    "logs:spawn": "serverless logs -f spawn-bot --stage dev",
-    "logs:worker": "serverless logs -f bot-worker --stage dev",
-    "remove:dev": "serverless remove --stage dev",
-    "offline": "serverless offline"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    
+    "deploy:bot-worker": "serverless deploy function --function botWorker",
+    "deploy:cleanup": "serverless deploy function --function cleanup", 
+    "deploy:all": "serverless deploy",
+    
+    "lambda:find-running": "node scripts/lambdaCleanup.js find-running",
+    "lambda:metrics": "node scripts/lambdaCleanup.js metrics",
+    "lambda:emergency-timeout": "node scripts/lambdaCleanup.js emergency-timeout 60",
+    "lambda:emergency-timeout:confirm": "node scripts/lambdaCleanup.js emergency-timeout 60 --confirm-timeout-update",
+    "lambda:cleanup-logs": "node scripts/lambdaCleanup.js cleanup-logs 3",
+    "lambda:cleanup-logs:week": "node scripts/lambdaCleanup.js cleanup-logs 7",
+    
+    "bot:spawn": "node scripts/testBotSpawn.js",
+    "bot:test": "node scripts/testBot.js",
+    
+    "logs:bot-worker": "serverless logs --function botWorker --tail",
+    "logs:cleanup": "serverless logs --function cleanup --tail"
   },
+  "keywords": [
+    "bot",
+    "ai",
+    "music",
+    "game",
+    "lambda",
+    "aws"
+  ],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
-    "axios": "^1.6.0",
-    "aws-sdk": "^2.1490.0"
+    "aws-sdk": "^2.1691.0",
+    "axios": "^1.9.0",
+    "dotenv": "^16.5.0"
   },
   "devDependencies": {
+    "serverless": "^3.38.0",
     "serverless-offline": "^13.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
