@@ -22,6 +22,8 @@ class BotWorker {
     this.stateStartTime = Date.now();
     this.currentState = null;
     this.MAX_STATE_DURATION = 15 * 60 * 1000; // 15 minutes
+    this.spawnTime = Date.now();
+    this.MAX_AGE = 24 * 60 * 60 * 1000; 
 
     console.log(`Bot ${this.botName} initialized with 15-minute state timeout`);
   }
@@ -1293,6 +1295,11 @@ exports.handler = async (event, context) => {
     const maxRunTime = 14 * 60 * 1000; // 14 minutes (leave 1 minute buffer)
     
     while (true) {
+      if (Date.now() - this.spawnTime > this.MAX_AGE) {
+        console.log(`Bot ${this.botName} is 24+ hours old, terminating`);
+        break;
+      }
+
       try {
         await bot.getGameState();
         const shouldContinue = await bot.processGameState();
