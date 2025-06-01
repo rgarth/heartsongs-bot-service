@@ -802,36 +802,50 @@ Format your response as JSON:
     
     if (hasVoted) return;
 
-    // Check if this is a 2-player game (bot can vote for itself)
-    const totalPlayers = this.gameState.activePlayers && this.gameState.activePlayers.length > 0 
-      ? this.gameState.activePlayers.length 
-      : this.gameState.players.length;
+    // Get all non-passed submissions (including bot's own in 2-player games)
+    const allSubmissions = this.gameState.submissions.filter(s => !s.hasPassed);
     
+    if (allSubmissions.length === 0) {
+      console.log(`Bot ${this.botName} has no valid submissions to vote for`);
+      return;
+    }
+
+    // Check if this is a 2-player game (self-voting allowed)
+    const totalPlayers = this.gameState.activePlayers?.length || this.gameState.players.length;
     const canVoteForSelf = totalPlayers < 3;
     
-    // Filter votable submissions based on game rules
-    const votableSubmissions = this.gameState.submissions.filter(s => {
-      // Skip passed submissions
-      if (s.hasPassed) return false;
-      
-      // In 2-player games, bot can vote for itself
-      // In 3+ player games, bot cannot vote for itself
-      if (s.player._id === this.botId && !canVoteForSelf) {
-        return false;
-      }
-      
-      return true;
+    console.log(`Bot ${this.botName} voting in ${totalPlayers}-player game (self-voting ${canVoteForSelf ? 'allowed' : 'not allowed'})`);
+    console.log(`Found ${allSubmissions.length} submissions to consider:`);
+    allSubmissions.forEach((sub, i) => {
+      const isOwn = sub.player._id === this.botId;
+      console.log(`  ${i + 1}. "${sub.songName}" by ${sub.artist} ${isOwn ? '(BOT\'S OWN)' : '(OPPONENT)'}`);
     });
+
+    // Filter based on self-voting rules
+    let votableSubmissions;
+    if (canVoteForSelf) {
+      // In 2-player games, bot can vote for any submission (including its own)
+      votableSubmissions = allSubmissions;
+    } else {
+      // In 3+ player games, bot cannot vote for its own submission
+      votableSubmissions = allSubmissions.filter(s => s.player._id !== this.botId);
+    }
     
-    if (votableSubmissions.length === 0) return;
+    if (votableSubmissions.length === 0) {
+      console.log(`Bot ${this.botName} has no valid submissions after filtering`);
+      return;
+    }
 
     // Human-like voting delay
     const delay = 3000 + Math.random() * 8000; // 3-11 seconds
     
     setTimeout(async () => {
       try {
-        // Enhanced voting choice
-        const choice = await this.chooseVote(votableSubmissions);
+        // Smart voting decision
+        const choice = await this.makeSmartVotingChoice(votableSubmissions, canVoteForSelf);
+        
+        console.log(`Bot ${this.botName} chose to vote for: "${choice.songName}" by ${choice.artist}`);
+        console.log(`Voting for submission ID: ${choice._id}`);
         
         await axios.post(`${this.apiUrl}/game/vote`, {
           gameId: this.gameId,
@@ -841,11 +855,200 @@ Format your response as JSON:
           headers: { Authorization: `Bearer ${this.sessionToken}` }
         });
         
-        console.log(`Bot ${this.botName} voted for: "${choice.songName}" by ${choice.artist}`);
+        console.log(`Bot ${this.botName} successfully voted for: "${choice.songName}" by ${choice.artist}`);
       } catch (error) {
-        console.error('Failed to vote:', error.message);
+        console.error(`Bot ${this.botName} failed to vote:`, error.message);
+        if (error.response?.data) {
+          console.error('Vote error details:', error.response.data);
+        }
       }
     }, delay);
+  }
+
+  /**
+   * SMART voting logic that considers game context
+   */
+  async makeSmartVotingChoice(submissions, canVoteForSelf) {
+    console.log(`Bot ${this.botName} making smart voting choice with ${submissions.length} options`);
+    
+    // Separate own vs opponent submissions
+    const ownSubmissions = submissions.filter(s => s.player._id === this.botId);
+    const opponentSubmissions = submissions.filter(s => s.player._id !== this.botId);
+    
+    console.log(`- Own submissions: ${ownSubmissions.length}`);
+    console.log(`- Opponent submissions: ${opponentSubmissions.length}`);
+    
+    // In 2-player games, be strategic about self-voting
+    if (canVoteForSelf && ownSubmissions.length > 0 && opponentSubmissions.length > 0) {
+      const ownSubmission = ownSubmissions[0];
+      const opponentSubmission = opponentSubmissions[0];
+      
+      console.log(`Bot ${this.botName} comparing:`);
+      console.log(`- Own: "${ownSubmission.songName}" by ${ownSubmission.artist}`);
+      console.log(`- Opponent: "${opponentSubmission.songName}" by ${opponentSubmission.artist}`);
+      
+      // Use AI to compare the songs if possible
+      const shouldVoteForSelf = await this.shouldVoteForOwnSubmission(ownSubmission, opponentSubmission);
+      
+      if (shouldVoteForSelf) {
+        console.log(`Bot ${this.botName} decided to vote for own submission`);
+        return ownSubmission;
+      } else {
+        console.log(`Bot ${this.botName} decided to vote for opponent's submission`);
+        return opponentSubmission;
+      }
+    }
+    
+    // Fallback to personality-based voting
+    return this.chooseVoteByPersonality(submissions);
+  }
+
+  /**
+   * AI-powered decision on whether to vote for own submission
+   */
+  async shouldVoteForOwnSubmission(ownSubmission, opponentSubmission) {
+    // If no OpenAI, use personality-based logic
+    if (!this.openaiApiKey) {
+      return this.shouldVoteForSelfByPersonality(ownSubmission, opponentSubmission);
+    }
+    
+    try {
+      const currentQuestion = this.gameState.currentQuestion?.text || "the music question";
+      
+      const prompt = `You are judging a music game where two players answered: "${currentQuestion}"
+
+  Player 1 submitted: "${ownSubmission.songName}" by ${ownSubmission.artist}
+  Player 2 submitted: "${opponentSubmission.songName}" by ${opponentSubmission.artist}
+
+  As an impartial judge, which song better answers the question? Consider:
+  - How well the song fits the question
+  - Song quality and popularity
+  - Creativity of the choice
+
+  Be honest and objective. If Player 2's song is better, vote for it.
+
+  Respond with just "PLAYER1" or "PLAYER2" and a brief reason.`;
+
+      console.log(`Bot ${this.botName} asking AI to compare submissions...`);
+
+      const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an impartial music expert judging which song better answers a question. Be honest and objective.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 100,
+        temperature: 0.3 // Lower temperature for more consistent judging
+      }, {
+        headers: {
+          'Authorization': `Bearer ${this.openaiApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      });
+
+      const aiResponse = response.data.choices[0].message.content.trim();
+      console.log(`Bot ${this.botName} AI judgment: ${aiResponse}`);
+      
+      // Parse the response
+      const shouldVoteForSelf = aiResponse.toUpperCase().includes('PLAYER1');
+      console.log(`Bot ${this.botName} AI decision: ${shouldVoteForSelf ? 'vote for self' : 'vote for opponent'}`);
+      
+      return shouldVoteForSelf;
+      
+    } catch (error) {
+      console.error(`Bot ${this.botName} AI voting analysis failed:`, error.message);
+      // Fallback to personality-based decision
+      return this.shouldVoteForSelfByPersonality(ownSubmission, opponentSubmission);
+    }
+  }
+
+  /**
+   * Personality-based decision on self-voting (fallback)
+   */
+  shouldVoteForSelfByPersonality(ownSubmission, opponentSubmission) {
+    console.log(`Bot ${this.botName} using personality-based voting decision`);
+    
+    switch (this.personality) {
+      case 'analytical':
+        // Analytical bots are more objective - vote for opponent 60% of the time
+        const shouldBeObjective = Math.random() < 0.6;
+        console.log(`Bot ${this.botName} (analytical) being ${shouldBeObjective ? 'objective' : 'slightly biased'}`);
+        return !shouldBeObjective;
+        
+      case 'eclectic':
+        // Eclectic bots prefer unique choices - check if opponent has something more unique
+        const opponentIsMoreUnique = !this.isMainstreamSong(opponentSubmission) && this.isMainstreamSong(ownSubmission);
+        console.log(`Bot ${this.botName} (eclectic) checking uniqueness: opponent more unique = ${opponentIsMoreUnique}`);
+        return !opponentIsMoreUnique;
+        
+      case 'mainstream':
+        // Mainstream bots prefer popular songs
+        const opponentIsMoreMainstream = this.isMainstreamSong(opponentSubmission) && !this.isMainstreamSong(ownSubmission);
+        console.log(`Bot ${this.botName} (mainstream) checking popularity: opponent more mainstream = ${opponentIsMoreMainstream}`);
+        return !opponentIsMoreMainstream;
+        
+      case 'indie':
+        // Indie bots prefer alternative choices
+        const opponentIsMoreIndie = this.isIndieArtist(opponentSubmission.artist) && !this.isIndieArtist(ownSubmission.artist);
+        console.log(`Bot ${this.botName} (indie) checking indie cred: opponent more indie = ${opponentIsMoreIndie}`);
+        return !opponentIsMoreIndie;
+        
+      case 'vintage':
+        // Vintage bots prefer older songs
+        const opponentIsMoreVintage = this.isVintageSong(opponentSubmission) && !this.isVintageSong(ownSubmission);
+        console.log(`Bot ${this.botName} (vintage) checking age: opponent more vintage = ${opponentIsMoreVintage}`);
+        return !opponentIsMoreVintage;
+        
+      default:
+        // Default: vote for opponent 50% of the time (fair)
+        const randomChoice = Math.random() < 0.5;
+        console.log(`Bot ${this.botName} making random fair choice: ${randomChoice ? 'self' : 'opponent'}`);
+        return randomChoice;
+    }
+  }
+
+  /**
+   * Fallback personality-based voting (for 3+ player games)
+   */
+  chooseVoteByPersonality(submissions) {
+    console.log(`Bot ${this.botName} using personality-based choice from ${submissions.length} submissions`);
+    
+    const votingStyles = {
+      eclectic: () => {
+        const unique = submissions.find(s => !this.isMainstreamSong(s));
+        return unique || submissions[0];
+      },
+      mainstream: () => {
+        const mainstream = submissions.find(s => this.isMainstreamSong(s));
+        return mainstream || submissions[0];
+      },
+      indie: () => {
+        const indie = submissions.find(s => this.isIndieArtist(s.artist));
+        return indie || submissions[0];
+      },
+      vintage: () => {
+        const vintage = submissions.find(s => this.isVintageSong(s));
+        return vintage || submissions[0];
+      },
+      analytical: () => {
+        // More random for analytical, but could be enhanced with AI
+        const randomIndex = Math.floor(Math.random() * submissions.length);
+        return submissions[randomIndex];
+      }
+    };
+    
+    const votingFunction = votingStyles[this.personality] || votingStyles.analytical;
+    const choice = votingFunction();
+    
+    console.log(`Bot ${this.botName} personality choice: "${choice.songName}" by ${choice.artist}`);
+    return choice;
   }
 
   /**
