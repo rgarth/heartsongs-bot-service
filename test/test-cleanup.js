@@ -3,7 +3,7 @@ const axios = require('axios');
 
 // Test the cleanup function
 async function testCleanup() {
-  const BOT_API_URL = 'https://ywfgn0rvlc.execute-api.us-east-1.amazonaws.com/dev';
+  const BOT_API_URL = 'https://5dwmbtlad2.execute-api.us-east-1.amazonaws.com/dev';
   
   console.log('🧹 Testing Bot Cleanup Function');
   console.log('================================');

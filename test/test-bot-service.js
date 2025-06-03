@@ -2,7 +2,7 @@
 const axios = require('axios');
 
 // Configuration
-const BOT_API_URL = 'https://ywfgn0rvlc.execute-api.us-east-1.amazonaws.com/dev';
+const BOT_API_URL = 'https://5dwmbtlad2.execute-api.us-east-1.amazonaws.com/dev';
 const HEART_SONGS_API_URL = 'https://heart-songs-development.onrender.com/api';
 
 // Test results
