@@ -1344,7 +1344,8 @@ Create 1 creative, engaging music question that:
 - Fits your personality as described above
 - Is not too specific (avoid naming exact artists unless that's the point)
 - Is clear and easy to understand
-- The question must be answerrable with a song title and artist which is well-known or recognizable
+- The question must be answerrable with a song title and artist, which is well-known or recognizable
+- You can ask What song? You cannot ask for reasons. The others players can submit songs. Nothing else.
 
 Examples of good questions:
 - "What song would you play during a thunderstorm?"
