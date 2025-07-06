@@ -29,25 +29,47 @@ class BotWorker {
   }
 
   async getGameState() {
-    try {
-      const response = await axios.get(`${this.apiUrl}/game/${this.gameId}`, {
-        headers: { Authorization: `Bearer ${this.sessionToken}` }
-      });
-      
-      const newGameState = response.data;
-      
-      // NEW: Check if game state changed
-      if (this.currentState !== newGameState.status) {
-        console.log(`Bot ${this.botName}: State changed from ${this.currentState} to ${newGameState.status}`);
-        this.currentState = newGameState.status;
-        this.stateStartTime = Date.now();
+    const maxRetries = 3;
+    const baseDelay = 2000;
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await axios.get(`${this.apiUrl}/game/${this.gameId}`, {
+          headers: { Authorization: `Bearer ${this.sessionToken}` },
+          timeout: 10000
+        });
+        
+        const newGameState = response.data;
+        
+        // NEW: Check if game state changed
+        if (this.currentState !== newGameState.status) {
+          console.log(`Bot ${this.botName}: State changed from ${this.currentState} to ${newGameState.status}`);
+          this.currentState = newGameState.status;
+          this.stateStartTime = Date.now();
+        }
+        
+        this.gameState = newGameState;
+        return this.gameState;
+      } catch (error) {
+        console.error(`Bot ${this.botName} getGameState attempt ${attempt + 1} failed:`, error.message);
+        
+        // Check if this is a retryable error
+        const isRetryable = error.response?.status === 429 || 
+                           error.response?.status >= 500 || 
+                           error.code === 'ECONNRESET' || 
+                           error.code === 'ETIMEDOUT' || 
+                           error.code === 'ENOTFOUND' ||
+                           error.code === 'ECONNREFUSED';
+        
+        if (attempt === maxRetries || !isRetryable) {
+          throw error;
+        }
+        
+        // Exponential backoff with jitter
+        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
+        console.log(`Bot ${this.botName} retrying getGameState in ${Math.round(delay)}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
-      
-      this.gameState = newGameState;
-      return this.gameState;
-    } catch (error) {
-      console.error('Failed to get game state:', error.message);
-      throw error;
     }
   }
 
@@ -1499,8 +1521,8 @@ exports.handler = async (event, context) => {
     const maxRunTime = 14 * 60 * 1000; // 14 minutes (leave 1 minute buffer)
     
     while (true) {
-      if (Date.now() - this.spawnTime > this.MAX_AGE) {
-        console.log(`Bot ${this.botName} is 24+ hours old, terminating`);
+      if (Date.now() - bot.spawnTime > bot.MAX_AGE) {
+        console.log(`Bot ${bot.botName} is 24+ hours old, terminating`);
         break;
       }
 
