@@ -42,7 +42,7 @@ functions:
 
   spawn-bot:
     handler: lambda/spawn-bot/handler.handler
-    timeout: 30
+    timeout: 60
     events:
       - http:
           path: /spawn-bot
